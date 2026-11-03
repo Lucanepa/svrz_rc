@@ -191,6 +191,7 @@ function obs(partial: Partial<CoacheeObservationStatus> & { count: number }): Co
     hasCompletedObservation: partial.hasCompletedObservation ?? false,
     needsObservation: partial.needsObservation ?? false,
     latestObservationAt: partial.latestObservationAt ?? '',
+    furtherVisitRole: partial.furtherVisitRole ?? '',
   };
 }
 
@@ -737,6 +738,7 @@ export function saveFeedbackToPocketBase(params: {
         hasCompletedObservation: true,
         needsObservation: params.formData.results.secondBesuch === 'Y',
         hasFurtherObservationNeeded: params.formData.results.secondBesuch === 'Y',
+        furtherVisitRole: params.formData.results.secondBesuch === 'Y' ? params.formData.results.secondBesuchRole || '' : '',
         latestObservationAt: submittedAt,
       });
     }

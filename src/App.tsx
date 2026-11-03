@@ -593,6 +593,22 @@ function isInSeason(coachee: Coachee, season: number): boolean {
   return typeof coachee.season !== 'number' || coachee.season === season;
 }
 
+/** The role the coachee's newest report asked the further visit in, while one
+ *  is still wanted ("Weiterer Besuch: Y, als 1SR" → '1SR'). '' when any role
+ *  will do: a plain Y, no visit wanted, or a server too old to say. */
+function askedVisitRole(coachee: Coachee): TargetRole | '' {
+  const status = coachee.observation_status;
+  return status?.hasFurtherObservationNeeded ? status.furtherVisitRole || '' : '';
+}
+
+/** Games that role does not thin out. A flagged game is somebody asking for
+ *  that very game — not the report's to hide. A played one is not a game to
+ *  plan any more, and the 2. SR game a report was filed on must not vanish
+ *  from the past list because it asked for a 1. SR visit next. */
+function anyRoleFor(game: { starred?: boolean; date: string }): boolean {
+  return !!game.starred || dayKey(game.date) < todayKey();
+}
+
 function asInputDate(value: string): string {
   if (!value) {
     return '';
@@ -1603,7 +1619,7 @@ export default function App() {
   // referees the moment the take lands, so it is confirmed, never silent.
   const [takeNotice, setTakeNotice] = useState<{
     gameId: string; rcName: string; rcId: string; previousRc?: string; previousRcId?: string; label: string;
-    observed: Array<{ name: string; count: number; plannedBy?: string; plannedOn?: string }>;
+    observed: Array<{ name: string; count: number; plannedBy?: string; plannedOn?: string; askedRole?: TargetRole; onRole?: TargetRole }>;
     late: boolean;
     /** The coach's own appointments that day — see sameDayClashes. */
     clashes: SameDayClash[];
@@ -3124,15 +3140,22 @@ export default function App() {
   // Coachees on this game who have already been observed this season. A second
   // look is a legitimate thing to plan, so this never blocks the assignment —
   // it just makes sure it is a decision and not something discovered afterwards.
+  // Not when the last report asked for that second look in this role (or in
+  // any): then this game is the visit it asked for, and "already observed"
+  // questioned the very thing the coach wrote down (Luca, 2026-11-03). In the
+  // other role it still asks, and says which role the report wanted.
   const observedCoacheesOnGame = (game: EligibleGame) => {
     const seen = new Set<string>();
-    const out: Array<{ name: string; count: number; plannedBy?: string; plannedOn?: string }> = [];
+    const out: Array<{ name: string; count: number; plannedBy?: string; plannedOn?: string; askedRole?: TargetRole; onRole?: TargetRole }> = [];
     for (const role of ['1. SR', '2. SR'] as const) {
       const c = roster.onSlot(game, role);
       if (!c) continue;
       const name = c.full_name || getRefereeForRole(game, role);
       if (seen.has(c.id)) continue;
-      const count = observationCount(c);
+      const onRole: TargetRole = role === '1. SR' ? '1SR' : '2SR';
+      const asked = askedVisitRole(c);
+      const askedHere = !!c.observation_status?.hasFurtherObservationNeeded && (!asked || asked === onRole);
+      const count = askedHere ? 0 : observationCount(c);
       // A booking on ANOTHER game counts as coverage too: two coaches taking
       // the same coachee in the same week is the duplicate nobody notices,
       // because neither observation has been filed yet.
@@ -3140,7 +3163,7 @@ export default function App() {
       const elsewhere = booked && booked.game.id !== game.id ? booked : undefined;
       if (count === 0 && !elsewhere) continue;
       seen.add(c.id);
-      out.push({ name, count, plannedBy: elsewhere?.rc, plannedOn: elsewhere?.game.date });
+      out.push({ name, count, plannedBy: elsewhere?.rc, plannedOn: elsewhere?.game.date, ...(count > 0 && asked ? { askedRole: asked, onRole } : {}) });
     }
     return out;
   };
@@ -6419,14 +6442,21 @@ export default function App() {
    *  A promotion candidate is held to the table strictly: a game it cannot
    *  place (a cup round, say) is out of their focus, where for anyone else it
    *  is left in. Asked for by the coaches, 2026-09-12 — a "Beförderung" list
-   *  full of cup games is not a list of games to judge a promotion on. */
-  const inNiveauFocus = useCallback((coachee: Coachee | undefined, league: string, roles: TargetRole[]) => {
+   *  full of cup games is not a list of games to judge a promotion on.
+   *
+   *  Once a report asks for the further visit in one role ("Y, als 1SR"), only
+   *  that role's games are in focus — the first observation narrows the next
+   *  (Luca, 2026-11-03). `anyRole` lifts that for one game (see anyRoleFor). */
+  const inNiveauFocus = useCallback((coachee: Coachee | undefined, league: string, roles: TargetRole[], anyRole = false) => {
     if (!coachee || roles.length === 0) return true;
+    const asked = anyRole ? '' : askedVisitRole(coachee);
+    const wanted = asked ? roles.filter((role) => role === asked) : roles;
+    if (wanted.length === 0) return false;
     const key = levelKey(coachee.referee_level, coachee.stage);
     const target = coacheeTargets[coachee.id];
     if (!isTargetActive(target, key, niveauTable)) return true;
     const strict = isPromotionGroup(coachee.groups);
-    return roles.some((role) => keepGame({ league, role, target, levelKey: key, table: niveauTable, strict }));
+    return wanted.some((role) => keepGame({ league, role, target, levelKey: key, table: niveauTable, strict }));
   }, [coacheeTargets, niveauTable]);
   /** The rule as the lists apply it, escape hatch included. Split from the rule
    *  itself above because the switch that opens the hatch has to ask whether it
@@ -6434,7 +6464,7 @@ export default function App() {
    *  of focus" the moment it was used, and hide itself with the list still
    *  widened. */
   const inCoacheeFocus = useCallback(
-    (coachee: Coachee | undefined, league: string, roles: TargetRole[]) => showAllLevels || inNiveauFocus(coachee, league, roles),
+    (coachee: Coachee | undefined, league: string, roles: TargetRole[], anyRole = false) => showAllLevels || inNiveauFocus(coachee, league, roles, anyRole),
     [showAllLevels, inNiveauFocus],
   );
   const filteredCoachees = useMemo(() => {
@@ -6463,7 +6493,7 @@ export default function App() {
       // RC-Spiel left out — so the switch cannot leave a coachee on the list
       // with nothing under them.
       const flagged = (upcomingGamesByReferee.get(c.id) ?? [])
-        .some(({ game, role }) => game.starred && !game.isRcGame && inCoacheeFocus(c, game.league || '', [role === '1. SR' ? '1SR' : '2SR']));
+        .some(({ game, role }) => game.starred && !game.isRcGame && inCoacheeFocus(c, game.league || '', [role === '1. SR' ? '1SR' : '2SR'], true));
       // ...and it keeps them on the "Beobachtung nötig" list whatever their
       // status says, the way the Games tab keeps the flagged game itself: a
       // referee already signed off can still have a game somebody wants seen.
@@ -6503,18 +6533,12 @@ export default function App() {
       .map(([slot, role]) => ({ role, c: roster.onSlot(g, slot) }))
       .filter((r): r is { role: TargetRole; c: Coachee } => Boolean(r.c) && (!about || about.has(r.c!.id)));
     if (coacheeRefs.length === 0) return false;
-    const anyTargeted = coacheeRefs.some((r) => isTargetActive(coacheeTargets[r.c.id], levelKey(r.c.referee_level, r.c.stage), niveauTable));
-    if (!anyTargeted) return false;
     // Kept when it is in focus for ANY coachee on the whistle — the strict
     // reading of a promotion candidate hides nothing from the colleague beside
-    // them who is watched at every level.
-    return !coacheeRefs.some((r) =>
-      keepGame({
-        league: g.league || '', role: r.role, target: coacheeTargets[r.c.id],
-        levelKey: levelKey(r.c.referee_level, r.c.stage), table: niveauTable,
-        strict: isPromotionGroup(r.c.groups),
-      }));
-  }, [roster, coacheeTargets, niveauTable]);
+    // them who is watched at every level. The per-coachee rule, so a further
+    // visit asked in one role thins this list the way it thins theirs.
+    return !coacheeRefs.some((r) => inNiveauFocus(r.c, g.league || '', [r.role], anyRoleFor(g)));
+  }, [roster, inNiveauFocus]);
 
   // The coachee filter on the games tab. Its VALUES are coachee record ids —
   // the slot ids the server resolved are what the filter matches on — while
@@ -6587,8 +6611,8 @@ export default function App() {
       if (!isInSeason(c, seasonStartYear)) continue;
       for (const { game, role } of upcomingGamesByReferee.get(c.id) ?? []) {
         const roles: TargetRole[] = [role === '1. SR' ? '1SR' : '2SR'];
-        if (!found.focus && !inNiveauFocus(c, game.league || '', roles)) found.focus = true;
-        if (!found.starred && game.starred && inCoacheeFocus(c, game.league || '', roles)) found.starred = true;
+        if (!found.focus && !inNiveauFocus(c, game.league || '', roles, anyRoleFor(game))) found.focus = true;
+        if (!found.starred && game.starred && inCoacheeFocus(c, game.league || '', roles, true)) found.starred = true;
         if (found.starred && found.focus) return found;
       }
     }
@@ -6905,9 +6929,12 @@ export default function App() {
       // because the focus is switched off. Either way this chip must not read
       // as "come and watch this one here": an N2-2 up for promotion on a
       // 3. Liga evening is a referee helping out, not a visit.
-      const outOfFocus = isCoachee && !inNiveauFocus(
-        slotCoachee, game.league || '', [role === t.role2Short ? '2SR' : '1SR'],
-      );
+      const slotRole: TargetRole = role === t.role2Short ? '2SR' : '1SR';
+      const outOfFocus = isCoachee && !inNiveauFocus(slotCoachee, game.league || '', [slotRole], anyRoleFor(game));
+      // Out of focus because the last report wants the further visit in the
+      // other role — said so, or the chip reads as a Niveau question.
+      const askedElsewhere = outOfFocus && !anyRoleFor(game) && slotCoachee && askedVisitRole(slotCoachee) !== slotRole
+        ? askedVisitRole(slotCoachee) : '';
       // The Games tab is where an UNASSIGNED game lives, and an unassigned game
       // is where most börse offers sit — nobody has taken it yet. So this is the
       // list where the mark matters most, and it was the last one without it.
@@ -6936,8 +6963,8 @@ export default function App() {
                     className={cn('rounded bg-amber-200/70 px-1 py-px text-[9px] font-bold uppercase tracking-wide', outOfFocus && 'opacity-60')}
                     title={outOfFocus
                       ? (formData.lang === 'DE'
-                        ? `Ausserhalb des Fokus von ${name}${level ? ` (${level})` : ''} — das Spiel steht hier wegen des anderen Coachees oder weil „Alle Spiele" gewählt ist.`
-                        : `Outside ${name}'s focus${level ? ` (${level})` : ''} — the game is listed for the other coachee, or because "All games" is on.`)
+                        ? `Ausserhalb des Fokus von ${name}${level ? ` (${level})` : ''}${askedElsewhere ? ` — weiterer Besuch als ${askedElsewhere} gewünscht` : ''} — das Spiel steht hier wegen des anderen Coachees oder weil „Alle Spiele" gewählt ist.`
+                        : `Outside ${name}'s focus${level ? ` (${level})` : ''}${askedElsewhere ? ` — further visit wanted as ${askedElsewhere}` : ''} — the game is listed for the other coachee, or because "All games" is on.`)
                       : undefined}
                   >
                     Coachee{level ? ` · ${level}` : ''}{group ? ` · ${group}` : ''}
@@ -9089,7 +9116,7 @@ export default function App() {
                         // carries it, greyed, as that list is every game the
                         // coachee stands on.
                         const focusGames = ownGames.filter(({ game, role }) =>
-                          !game.isRcGame && inCoacheeFocus(coachee, game.league || '', [role === '1. SR' ? '1SR' : '2SR']));
+                          !game.isRcGame && inCoacheeFocus(coachee, game.league || '', [role === '1. SR' ? '1SR' : '2SR'], anyRoleFor(game)));
                         // With the flagged switch on, the row shows the games
                         // that put it on the list and nothing else.
                         const shownGames = coacheeFilterStarred ? focusGames.filter(({ game }) => game.starred) : focusGames;
@@ -9878,8 +9905,9 @@ export default function App() {
                 if (g.assignedRoles.includes('2. SR')) roles.push('2SR');
                 return roles;
               };
-              const visibleGames = seasonGames.filter((g) => inCoacheeFocus(viewCoachee, g.league || '', srRoles(g)));
+              const visibleGames = seasonGames.filter((g) => inCoacheeFocus(viewCoachee, g.league || '', srRoles(g), anyRoleFor(g)));
               const hiddenByTarget = seasonGames.length - visibleGames.length;
+              const askedRole = viewCoachee ? askedVisitRole(viewCoachee) : '';
               // The endpoint sorts newest-first, which is what the past list
               // wants and the exact opposite of what this one does: it put the
               // game furthest away at the top and the next one to referee at
@@ -9936,14 +9964,14 @@ export default function App() {
                       </span>
                     </div>
                   )}
-                  {(hiddenByTarget > 0 || (showAllLevels && isTargetActive(target, lvlKey, niveauTable))) && (
+                  {(hiddenByTarget > 0 || (showAllLevels && (isTargetActive(target, lvlKey, niveauTable) || !!askedRole))) && (
                     <div className="flex items-center justify-between gap-2 px-4 py-2 bg-emerald-50 border-b border-emerald-200 text-xs text-emerald-800">
                       <span>
                         {showAllLevels
                           ? (formData.lang === 'DE' ? 'Alle Spiele werden angezeigt (Fokus-Filter aus).' : 'Showing all games (focus filter off).')
                           : (formData.lang === 'DE'
-                            ? `${hiddenByTarget} Spiel(e) ausserhalb des Fokus ausgeblendet.`
-                            : `${hiddenByTarget} game(s) outside the focus hidden.`)}
+                            ? `${hiddenByTarget} Spiel(e) ausserhalb des Fokus ausgeblendet.${askedRole ? ` Weiterer Besuch als ${askedRole} gewünscht.` : ''}`
+                            : `${hiddenByTarget} game(s) outside the focus hidden.${askedRole ? ` Further visit wanted as ${askedRole}.` : ''}`)}
                       </span>
                       <button
                         onClick={toggleFocusRule}
@@ -10001,7 +10029,7 @@ export default function App() {
                               // kinds; the chip tells them apart. With it on,
                               // everything shown is in focus and a chip on
                               // every row would say nothing.
-                              focus: showAllLevels && inCoacheeFocus(viewCoachee, game.league || '', srRoles(game)),
+                              focus: showAllLevels && inCoacheeFocus(viewCoachee, game.league || '', srRoles(game), anyRoleFor(game)),
                               action: eg ? (
                                 <div className="flex flex-wrap items-center gap-2">
                                   {!holder ? (
@@ -11675,11 +11703,18 @@ export default function App() {
         const clashNear = takeNotice.clashes.some((c) => c.near);
         // Written as whole sentences per case: a coachee can be here for a
         // filed observation, for one somebody else has booked, or for both.
-        const sentence = (o: { count: number; plannedBy?: string; plannedOn?: string }) => {
+        const sentence = (o: { count: number; plannedBy?: string; plannedOn?: string; askedRole?: TargetRole; onRole?: TargetRole }) => {
+          // A further visit wanted in the OTHER role: said beside the count,
+          // since that is what makes this game the wrong one for it.
+          const asked = o.askedRole && o.onRole
+            ? (de
+              ? ` Der letzte Bericht wünscht den weiteren Besuch als ${o.askedRole}, hier als ${o.onRole}.`
+              : ` The last report asks for the further visit as ${o.askedRole}; here as ${o.onRole}.`)
+            : '';
           const filed = o.count > 0
             ? (de
-              ? `wurde diese Saison bereits ${o.count > 1 ? `${o.count}× ` : ''}beobachtet.`
-              : `has already been observed ${o.count > 1 ? `${o.count}× ` : ''}this season.`)
+              ? `wurde diese Saison bereits ${o.count > 1 ? `${o.count}× ` : ''}beobachtet.${asked}`
+              : `has already been observed ${o.count > 1 ? `${o.count}× ` : ''}this season.${asked}`)
             : '';
           if (!o.plannedBy) return filed;
           const when = shortDate(o.plannedOn || '');

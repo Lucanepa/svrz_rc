@@ -33,6 +33,9 @@ export type CoacheeObservationStatus = {
   /** Whether the coachee's most recently filed report has the RC president's
    *  private note on it. Absent from an older server. */
   hasPresidentNote?: boolean;
+  /** The role the newest report asked the further visit in ("Y, als 1SR"),
+   *  while one is wanted; '' for a plain Y. Absent from an older server. */
+  furtherVisitRole?: '1SR' | '2SR' | '';
 };
 
 export type Coachee = {

@@ -59,7 +59,6 @@ export const INFOS_AUDIENCE_OF: Record<string, InfosAudience> = {
   ausbildung: 'new',
 
   // Regional referees: the SVRZ's own regulations, the season, pay, next steps.
-  erGbo: 'regional',
   srN3: 'regional',
   lrWeiterbildung: 'regional',
   unparteiische: 'regional',

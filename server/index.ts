@@ -4917,6 +4917,8 @@ const PROXIED_DOCS: Record<string, string> = {
   'beach': 'https://www.svrz.ch/_Resources/Persistent/3/0/8/2/3082c9d7e9e9a588d5f60911277b9867be7c5623/Beachvolleyballreglement.pdf',
   'sr-ohne-ausbildung': 'https://www.svrz.ch/_Resources/Persistent/9/c/8/a/9c8a886669e3f93370dcccaaaeef1b895dcd2294/Leitfaden%20SR%20ohne%20Ausbildung%20SVRZ_2026.pdf',
   'sr-n4': 'https://www.svrz.ch/_Resources/Persistent/3/5/e/d/35ed997ea5a294ccd0ace1e71504c93f755d2922/Leitfaden%20SR-Grundausbildung%20N4_2026.pdf',
+  // Off the list since 03.11.2026 (outdated); still served for installed
+  // apps up to 1.4.8, whose own list still carries it.
   'auszug-er-gbo': 'https://www.svrz.ch/_Resources/Persistent/5/2/9/d/529d3bceeb82b16df032b72dd4767f83c792625b/Auszug%20ER%20und%20GBO_2026-27.pdf',
   'sr-n3': 'https://www.svrz.ch/_Resources/Persistent/f/1/2/5/f1252d4f22119385c820e58aaf296d6df1247352/Leitfaden%20SR-Weiterbildung%20N3_2026.pdf',
   'lr-weiterbildung': 'https://www.svrz.ch/_Resources/Persistent/4/d/2/4/4d245df9d9a80c45f459b4c3a219f377b0481320/Leitfaden%20LR-Weiterbildung_2026.pdf',

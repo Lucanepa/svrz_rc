@@ -309,11 +309,15 @@ type Gesture = {
   origin: View;
   engaged: boolean;
   engagedAt: number;
+  /** A pan that is what is left of a pinch that moved the page. Its origin is
+   *  from before the pinch, so going back to it would take back a zoom the
+   *  coach meant. */
+  afterPinch: boolean;
 };
 type Stats = {
   pen: number; touch: number; mouse: number;
   penZeroStart: number; penMoves: number; penCoalesced: number; penPredicted: number; penPredictedDrawn: number;
-  cancels: number; palms: number; hist: number[]; zoomMax: number; slowFrameMs: number;
+  cancels: number; palms: number; latePansUndone: number; hist: number[]; zoomMax: number; slowFrameMs: number;
 };
 
 type Engine = {
@@ -351,7 +355,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   let penSeen = false;
   let wheelTimer = 0; let wheelZ0: number | null = null;
   let webkitGesture: { z0: number } | null = null;
-  const freshStats = (): Stats => ({ pen: 0, touch: 0, mouse: 0, penZeroStart: 0, penMoves: 0, penCoalesced: 0, penPredicted: 0, penPredictedDrawn: 0, cancels: 0, palms: 0, hist: new Array(10).fill(0), zoomMax: view.z, slowFrameMs: 0 });
+  const freshStats = (): Stats => ({ pen: 0, touch: 0, mouse: 0, penZeroStart: 0, penMoves: 0, penCoalesced: 0, penPredicted: 0, penPredictedDrawn: 0, cancels: 0, palms: 0, latePansUndone: 0, hist: new Array(10).fill(0), zoomMax: view.z, slowFrameMs: 0 });
   let stats = freshStats();
 
   const scale = () => (stageSize ? scaleOf(stageSize, view.z) : 1);
@@ -659,6 +663,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       origin: prev ? prev.origin : view,
       // A pan already moving goes on moving as a pinch, from where it is.
       engaged: !!prev && prev.engaged, engagedAt: prev ? prev.engagedAt : 0,
+      afterPinch: false,
     };
   };
 
@@ -730,7 +735,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
         // two contacts of a resting hand that never moved the page, one of
         // them lifting, must not let the other drag the page from its first
         // pixel, nor out of reach of the palm-first undo.
-        gesture = { kind: 'pan', ids: rest, start: view, c0: stagePoint(t.x, t.y), d0: 0, origin: g.origin, engaged: g.engaged, engagedAt: g.engagedAt };
+        gesture = { kind: 'pan', ids: rest, start: view, c0: stagePoint(t.x, t.y), d0: 0, origin: g.origin, engaged: g.engaged, engagedAt: g.engagedAt, afterPinch: g.engaged };
         return;
       }
       // A pinch never turns into a stroke.
@@ -760,8 +765,23 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     if (e.pointerType === 'pen') {
       penAt = now; penContactAt = now;
       if (!penSeen) { penSeen = true; p.onPenSeen(); }
-      // The hand landed first and moved the page: put it back.
-      if (gesture) { if (gesture.engaged && now - gesture.engagedAt < PALM_LEAD_MS) setView(gesture.origin, true); endGesture(); }
+      // The hand landed first and moved the page: put it back. Just now, whatever
+      // moved it. Later too when one finger moved it and is still on the glass:
+      // a deliberate pan lifts before writing, so that was the writing hand. A
+      // coach's voice note, 05.11.2026: coaches zoom now, so a palm that lands
+      // and slides can move the page, and iPadOS cancelled none of hers
+      // (03.11.2026), so the undo on a cancel never helped. A pinch stays, its
+      // finger left behind included.
+      if (gesture) {
+        const g = gesture;
+        const justNow = now - g.engagedAt < PALM_LEAD_MS;
+        const restingHand = g.kind === 'pan' && !g.afterPinch;
+        if (g.engaged && (justNow || restingHand)) {
+          if (!justNow) stats.latePansUndone += 1;
+          setView(g.origin, true);
+        }
+        endGesture();
+      }
       taintAll();
       // The pen wins over a finger stroke (the palm got there first).
       if (active && active.kind === 'touch') dropActive();
@@ -910,6 +930,9 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       predictedDrawnPerMove: stats.penMoves ? Math.round((stats.penPredictedDrawn / stats.penMoves) * 10) / 10 : null,
       cancels: stats.cancels,
       palms: stats.palms,
+      // The pans only the rule for a finger still on the glass put back. `palms`
+      // alone cannot say whether a hand ever moved the page.
+      latePansUndone: stats.latePansUndone,
       pressureMedian: median,
       zoomMax: Math.round(stats.zoomMax * 100) / 100,
       slowFrameMs: Math.round(stats.slowFrameMs),

@@ -866,7 +866,7 @@ test('a pen page files one line of counts when it is left, never a coordinate', 
   const data = lines[0].data!;
   expect(data).toMatchObject({ pen: 1, mouse: 1, touch: 0, cancels: 0, pressureMedian: 0.3 });
   for (const v of Object.values(data)) expect(v === null || typeof v === 'number').toBe(true);
-  expect(Object.keys(data).sort()).toEqual(['cancels', 'coalescedPerMove', 'mouse', 'palms', 'pen', 'penZeroStart', 'predictedDrawnPerMove', 'predictedPerMove', 'pressureMedian', 'slowFrameMs', 'touch', 'zoomMax'].sort());
+  expect(Object.keys(data).sort()).toEqual(['cancels', 'coalescedPerMove', 'latePansUndone', 'mouse', 'palms', 'pen', 'penZeroStart', 'predictedDrawnPerMove', 'predictedPerMove', 'pressureMedian', 'slowFrameMs', 'touch', 'zoomMax'].sort());
 });
 
 test('a pen page sent to the background files its counts then, in the batch that ships as the app goes', async ({ page }) => {

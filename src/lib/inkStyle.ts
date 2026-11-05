@@ -1,8 +1,9 @@
 // How a stroke on the pen page looks. Render-only: the stored stroke stays
-// { c, w, p, d } with raw pressure, so a page written before these presets
-// simply draws with them, and nothing has to be migrated (the server refuses
-// a whole page as 'ink-shape' for any other field, or a w that is not an
-// integer from 1 to 20).
+// { c, w, p, d } with its pressure before the pen curve, so a page written
+// before these presets simply draws with them, and nothing has to be migrated
+// (the server refuses a whole page as 'ink-shape' for any other field, or a w
+// that is not an integer from 1 to 20). InkPad's PRESSURE_EMA is the one number
+// that is not render-only: it smooths the pressure as a stroke is captured.
 //
 // Outlines are computed in PAGE UNITS, once per stroke, and drawn under the
 // view's transform: a line is part of the paper, so it grows when the coach
@@ -25,6 +26,24 @@ export const NEW_STROKE_W = 4;
  *  light Pencil line under a pixel wide is the "faint, scratchy" ink of the
  *  first report (Jennifer, 23.10.2026). */
 export const MIN_LINE_CSS_PX = 1.25;
+
+// The two numbers to tune on an iPad, for real Pencil pressure only: the finger
+// and mouse preset below and the signature pad's own options stay as they were.
+// A coach's voice note, 05.11.2026: harder to write on than GoodNotes. Her iPad
+// already samples at about 240 Hz, so these gain her little by themselves (the
+// predicted tail in InkPad is the main lag fix), and an older iPad gains more.
+/** How far the line stays behind the pen: each sample pulls it
+ *  0.15 + 0.85 · (1 − streamline) of the way there. Lower follows the pen more
+ *  closely. Simulated on a synthetic 5 mm cursive, not measured on an iPad, the
+ *  line's worst distance from the pen in CSS px, 0.35 → 0.2: 0.56 → 0.27 at
+ *  240 Hz, 2.67 → 1.28 at 60 Hz (an iPad before 18.2 has no coalesced events).
+ *  perfect-freehand's own 0.5 cut about 9 % off the corner of such a letter at
+ *  60 Hz. */
+export const PEN_STREAMLINE = 0.2;
+/** How far apart the outline's points may lie, as a share of the line's size.
+ *  Lower keeps more of a small letter's curve, at a few more outline points:
+ *  was 0.5. */
+export const PEN_SMOOTHING = 0.35;
 
 /** tldraw's pen curve: concave, so the light pressure of normal handwriting
  *  (Safari reports a Pencil's force / maximum force, about 0.1–0.35) still
@@ -70,11 +89,8 @@ export function strokeOptions(stroke: { w: number; p: 0 | 1 }, minRadius: number
     return {
       size,
       thinning: 0.4,
-      smoothing: 0.5,
-      // Less lag than perfect-freehand's 0.5: at 60 Hz (an iPad before 18.2
-      // has no coalesced events) 0.5 cut about 9 % off the corner of a 5 mm
-      // letter.
-      streamline: 0.35,
+      smoothing: PEN_SMOOTHING,
+      streamline: PEN_STREAMLINE,
       simulatePressure: false,
       easing: floored(linear, size, minRadius),
       last,

@@ -112,9 +112,36 @@ const SLOP_PX = 8;
 const ERASE_RADIUS_PX = 10;
 /** Samples closer than this on screen are merged (keeping the higher pressure). */
 const SAMPLE_MIN_PX = 0.6;
-/** Pencil pressure is smoothed a little: its noise showed as width jitter. */
-const PRESSURE_EMA = 0.5;
+/** Pencil pressure is smoothed a little: its noise showed as width jitter. The
+ *  share each new reading gets (ema = EMA · raw + (1 − EMA) · ema), so higher
+ *  follows the hand faster and shows more of the noise: was 0.5, raised with
+ *  the pen preset for a coach's voice note (05.11.2026). The smoothed value is
+ *  what a stroke stores, so a new number changes new strokes and leaves the old
+ *  ones as they were captured; nothing to migrate. */
+const PRESSURE_EMA = 0.65;
 const WHEEL_REPORT_MS = 150;
+// The tail the live layer draws ahead of the pen (predictTail below). A coach's
+// voice note, 05.11.2026: writing is harder here than in GoodNotes "with the
+// actual iPad pen". Her iPad samples at about 240 Hz (3.9 coalesced samples a
+// move, 03.11.2026) but hands over moves and frames at about 60, so a line of
+// real samples only trails the tip by a frame or more, however good they are.
+/** A predicted point may lie this many times the last real move from the pen:
+ *  a pen slowing down (a corner, an i-dot, the end of a line) moves little, so
+ *  it draws almost no tail, and one that stands still draws none. */
+const PREDICT_MOVES = 2;
+/** Nor further than this on screen, however fast the pen: about 3 mm on an
+ *  iPad, at 132 CSS px to the inch. */
+const PREDICT_MAX_PX = 16;
+/** Frames a tail stays with no new move to replace it. A pen that stops short
+ *  sends none, and the tail would stay out past where it stopped. */
+const PREDICT_FRAMES = 2;
+
+/** Where the system expects the pen next. Safari has the list since 18.2, as it
+ *  does the coalesced one (lib/inkInput.ts); older iPads get none, and draw
+ *  their real samples alone. */
+function predictedOf(e: PointerEvent): PointerEvent[] {
+  return typeof e.getPredictedEvents === 'function' ? e.getPredictedEvents() : [];
+}
 
 /** Absolute samples of one stroke: [x, y, p01][] in page units. */
 function strokePoints(stroke: InkStroke): InkSample[] {
@@ -261,6 +288,14 @@ type Active = {
   ema: number;
   /** Strokes the eraser touched in this drag. */
   erased: Set<InkStroke>;
+  /** Where the last move left the pen, in page units. */
+  tip: Point;
+  /** The tail ahead of the tip, in page units, replaced on every move: for the
+   *  live layer alone, so it never reaches a sample, the stored stroke or the
+   *  size guard, and it ends with the stroke. */
+  predicted: Point[];
+  /** Frames the tail has been up with no new move. */
+  predictedFrames: number;
 };
 type TouchState = { x: number; y: number; tainted: boolean };
 type Gesture = {
@@ -274,11 +309,15 @@ type Gesture = {
   origin: View;
   engaged: boolean;
   engagedAt: number;
+  /** A pan that is what is left of a pinch that moved the page. Its origin is
+   *  from before the pinch, so going back to it would take back a zoom the
+   *  coach meant. */
+  afterPinch: boolean;
 };
 type Stats = {
   pen: number; touch: number; mouse: number;
-  penZeroStart: number; penMoves: number; penCoalesced: number;
-  cancels: number; palms: number; hist: number[]; zoomMax: number; slowFrameMs: number;
+  penZeroStart: number; penMoves: number; penCoalesced: number; penPredicted: number; penPredictedDrawn: number;
+  cancels: number; palms: number; latePansUndone: number; hist: number[]; zoomMax: number; slowFrameMs: number;
 };
 
 type Engine = {
@@ -316,7 +355,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
   let penSeen = false;
   let wheelTimer = 0; let wheelZ0: number | null = null;
   let webkitGesture: { z0: number } | null = null;
-  const freshStats = (): Stats => ({ pen: 0, touch: 0, mouse: 0, penZeroStart: 0, penMoves: 0, penCoalesced: 0, cancels: 0, palms: 0, hist: new Array(10).fill(0), zoomMax: view.z, slowFrameMs: 0 });
+  const freshStats = (): Stats => ({ pen: 0, touch: 0, mouse: 0, penZeroStart: 0, penMoves: 0, penCoalesced: 0, penPredicted: 0, penPredictedDrawn: 0, cancels: 0, palms: 0, latePansUndone: 0, hist: new Array(10).fill(0), zoomMax: view.z, slowFrameMs: 0 });
   let stats = freshStats();
 
   const scale = () => (stageSize ? scaleOf(stageSize, view.z) : 1);
@@ -396,8 +435,17 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     if (!a || a.eraser || a.samples.length === 0 || !stageSize) return;
     const t = props().tool;
     const style = { w: NEW_STROKE_W, p: (a.pressureSeen ? 1 : 0) as 0 | 1 };
-    const path = freehandPath(outlineSamples(a.samples.map((s) => [s.x, s.y, s.p]), style.p === 1), strokeOptions(style, minR, false));
+    const points: InkSample[] = a.samples.map((s) => [s.x, s.y, s.p]);
+    const tailPressure = a.pressureSeen ? a.ema : 0;
+    for (const q of a.predicted) points.push([q.x, q.y, tailPressure]);
+    const path = freehandPath(outlineSamples(points, style.p === 1), strokeOptions(style, minR, false));
     if (path) withPageTransform(ctx, () => { ctx.fillStyle = INK_COLOURS[t.kind === 'pen' ? t.colour : 0]; ctx.fill(path); });
+    if (a.predicted.length) {
+      a.predictedFrames += 1;
+      if (a.predictedFrames >= PREDICT_FRAMES) a.predicted = [];
+      // One more frame either way: it shows the next move's tail, or this one gone.
+      liveDirty = true; schedule();
+    }
   };
 
   /** Paper and ink in the same frame, or the page would lag its own ink. */
@@ -475,6 +523,27 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     a.samples.push({ x, y, p, t });
   };
 
+  /** The tail for the move that just left the pen at (x, y). A prediction runs
+   *  on past a corner or a pen-up, and a short line would show it as a flick,
+   *  so it is cut at the first point too far from the pen (PREDICT_MOVES,
+   *  PREDICT_MAX_PX) or heading back the way the pen came. */
+  const predictTail = (a: Active, e: PointerEvent, x: number, y: number) => {
+    const dx = x - a.tip.x; const dy = y - a.tip.y;
+    const reach = Math.min(PREDICT_MOVES * Math.hypot(dx, dy), PREDICT_MAX_PX / scale());
+    const offered = predictedOf(e);
+    const tail: Point[] = [];
+    for (const ev of offered) {
+      const [px, py] = pagePoint(ev.clientX, ev.clientY);
+      const ox = px - x; const oy = py - y;
+      if (Math.hypot(ox, oy) > reach || ox * dx + oy * dy < 0) break;
+      tail.push({ x: px, y: py });
+    }
+    a.tip = { x, y };
+    a.predicted = tail;
+    a.predictedFrames = 0;
+    if (a.kind === 'pen') { stats.penPredicted += offered.length; stats.penPredictedDrawn += tail.length; }
+  };
+
   const flushErase = (force: boolean) => {
     const a = active;
     if (!a || a.erased.size === 0) return;
@@ -502,7 +571,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     if (x < 0 || x > PAGE_W || y < 0 || y > PAGE_H) return false;
     e.preventDefault();
     const eraser = props().tool.kind === 'eraser' || (kind === 'pen' && e.button === 5);
-    active = { pointerId: e.pointerId, kind, startedAt: now, eraser, samples: [], minDist: SAMPLE_MIN_PX / scale(), pressureSeen: false, ema: 0, erased: new Set() };
+    active = { pointerId: e.pointerId, kind, startedAt: now, eraser, samples: [], minDist: SAMPLE_MIN_PX / scale(), pressureSeen: false, ema: 0, erased: new Set(), tip: { x, y }, predicted: [], predictedFrames: 0 };
     // After the stroke started (lib/inkInput.ts says why).
     captureQuietly(stage, e.pointerId);
     if (eraser) { eraseAt(x, y); return true; }
@@ -594,6 +663,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       origin: prev ? prev.origin : view,
       // A pan already moving goes on moving as a pinch, from where it is.
       engaged: !!prev && prev.engaged, engagedAt: prev ? prev.engagedAt : 0,
+      afterPinch: false,
     };
   };
 
@@ -665,7 +735,7 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
         // two contacts of a resting hand that never moved the page, one of
         // them lifting, must not let the other drag the page from its first
         // pixel, nor out of reach of the palm-first undo.
-        gesture = { kind: 'pan', ids: rest, start: view, c0: stagePoint(t.x, t.y), d0: 0, origin: g.origin, engaged: g.engaged, engagedAt: g.engagedAt };
+        gesture = { kind: 'pan', ids: rest, start: view, c0: stagePoint(t.x, t.y), d0: 0, origin: g.origin, engaged: g.engaged, engagedAt: g.engagedAt, afterPinch: g.engaged };
         return;
       }
       // A pinch never turns into a stroke.
@@ -695,8 +765,23 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
     if (e.pointerType === 'pen') {
       penAt = now; penContactAt = now;
       if (!penSeen) { penSeen = true; p.onPenSeen(); }
-      // The hand landed first and moved the page: put it back.
-      if (gesture) { if (gesture.engaged && now - gesture.engagedAt < PALM_LEAD_MS) setView(gesture.origin, true); endGesture(); }
+      // The hand landed first and moved the page: put it back. Just now, whatever
+      // moved it. Later too when one finger moved it and is still on the glass:
+      // a deliberate pan lifts before writing, so that was the writing hand. A
+      // coach's voice note, 05.11.2026: coaches zoom now, so a palm that lands
+      // and slides can move the page, and iPadOS cancelled none of hers
+      // (03.11.2026), so the undo on a cancel never helped. A pinch stays, its
+      // finger left behind included.
+      if (gesture) {
+        const g = gesture;
+        const justNow = now - g.engagedAt < PALM_LEAD_MS;
+        const restingHand = g.kind === 'pan' && !g.afterPinch;
+        if (g.engaged && (justNow || restingHand)) {
+          if (!justNow) stats.latePansUndone += 1;
+          setView(g.origin, true);
+        }
+        endGesture();
+      }
       taintAll();
       // The pen wins over a finger stroke (the palm got there first).
       if (active && active.kind === 'touch') dropActive();
@@ -743,10 +828,12 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       const list = coalescedOf(e);
       if (a.eraser) { for (const ev of list) { const [x, y] = pagePoint(ev.clientX, ev.clientY); eraseAt(x, y); } flushErase(false); return; }
       if (a.kind === 'pen') { stats.penMoves += 1; stats.penCoalesced += list.length; }
+      let x = 0; let y = 0;
       for (const ev of list) {
-        const [x, y] = pagePoint(ev.clientX, ev.clientY);
+        [x, y] = pagePoint(ev.clientX, ev.clientY);
         addSample(a, x, y, a.kind === 'pen' ? ev.pressure : 0, ev.timeStamp);
       }
+      predictTail(a, e, x, y);
       liveDirty = true; schedule();
       return;
     }
@@ -837,8 +924,15 @@ function createEngine(els: { stage: HTMLDivElement; paper: HTMLDivElement; pageC
       mouse: stats.mouse,
       penZeroStart: stats.penZeroStart,
       coalescedPerMove: stats.penMoves ? Math.round((stats.penCoalesced / stats.penMoves) * 10) / 10 : null,
+      // What the browser offers, and what passes predictTail: an iPad with none
+      // and one whose every point is cut would otherwise look the same.
+      predictedPerMove: stats.penMoves ? Math.round((stats.penPredicted / stats.penMoves) * 10) / 10 : null,
+      predictedDrawnPerMove: stats.penMoves ? Math.round((stats.penPredictedDrawn / stats.penMoves) * 10) / 10 : null,
       cancels: stats.cancels,
       palms: stats.palms,
+      // The pans only the rule for a finger still on the glass put back. `palms`
+      // alone cannot say whether a hand ever moved the page.
+      latePansUndone: stats.latePansUndone,
       pressureMedian: median,
       zoomMax: Math.round(stats.zoomMax * 100) / 100,
       slowFrameMs: Math.round(stats.slowFrameMs),

@@ -1,5 +1,6 @@
 import { test, expect, type Page } from '@playwright/test';
 import { stubSignedInApp } from './support/app';
+import { MIN_LINE_CSS_PX, PEN_SMOOTHING, PEN_STREAMLINE, minRadiusFor, strokeOptions } from '../src/lib/inkStyle';
 
 /**
  * How wide a Pencil line draws (Jennifer, 23.10.2026: "other software gives
@@ -118,4 +119,17 @@ test('an iPad in landscape, the whole page on screen: no line thinner than about
   for (const [fy] of rows) widths.push(await widthAt(page, fy));
   const seen = JSON.stringify(widths.map((w) => +w.toFixed(2)));
   for (const w of widths) expect(w, seen).toBeGreaterThanOrEqual(1.15);
+  // The pen preset's floor, at the lightest touch on a whole page.
+  expect(widths[0], seen).toBeGreaterThanOrEqual(MIN_LINE_CSS_PX - 0.05);
+});
+
+test('the pen preset is the only one that changed: the finger and the mouse keep theirs, and both ends of a stroke use the same one', () => {
+  const minR = minRadiusFor(0.4);
+  const pen = strokeOptions({ w: 4, p: 1 }, minR, false);
+  expect(pen).toMatchObject({ smoothing: PEN_SMOOTHING, streamline: PEN_STREAMLINE, thinning: 0.4, simulatePressure: false, last: false });
+  expect(strokeOptions({ w: 4, p: 0 }, minR, false)).toMatchObject({ smoothing: 0.6, streamline: 0.45, thinning: 0.5, simulatePressure: true, last: false });
+  // Live and committed differ only in `last`, or the line would jump at pen-up.
+  const { easing: _live, ...live } = pen;
+  const { easing: _committed, ...committed } = strokeOptions({ w: 4, p: 1 }, minR, true);
+  expect(committed).toEqual({ ...live, last: true });
 });

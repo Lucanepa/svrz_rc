@@ -261,6 +261,110 @@ test('a resting hand: of two still contacts one lifts, and the other drifting a 
   expect(Math.abs(d[1] / 10 - anchor[1])).toBeLessThan(2);
 });
 
+test.describe('the pen lands while a finger is still on the glass, long after it moved the page', () => {
+  // A coach's voice note, 05.11.2026. Later than the 300 ms of the palm-first
+  // undo, so nothing but the finger still being down can tell these apart.
+  const WELL_AFTER_MS = 450;
+  const closeSheetAndCount = async (page: Page) => {
+    await sheet(page).getByRole('button', { name: /^(Schliessen|Close)$/ }).click();
+    await expect(sheet(page)).toHaveCount(0);
+    const lines = await page.evaluate(() => {
+      const w = window as unknown as { svrzLogs?: () => { evt: string; data?: Record<string, unknown> }[] };
+      return (w.svrzLogs ? w.svrzLogs() : []).filter((e) => e.evt === 'ink.page');
+    });
+    return lines[0].data!.latePansUndone;
+  };
+  const zoomedFingerOff = async (page: Page) => {
+    await page.addInitScript(() => { try { localStorage.setItem('svrz_ink_finger', '0'); } catch { /* private mode */ } });
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPenPage(page);
+    await zoomIn(page).click();
+    await expect(stage(page)).toHaveAttribute('data-zoom', '1.50');
+    return { s: await box(page, 'stage'), p0: await box(page, 'paper') };
+  };
+  const pagePointAt = (s: Box, p: Box, fx: number, fy: number) => [((s.x + s.width * fx - p.x) / p.width) * 1000, ((s.y + s.height * fy - p.y) / p.height) * 1414];
+  const panSteps = (s: Box, id: number, byY: number): Step[] => {
+    const steps: Step[] = [{ type: 'down', id, kind: 'touch', fx: 0.5, fy: 0.5 }];
+    for (let i = 1; i <= 6; i += 1) steps.push({ type: 'move', id, kind: 'touch', fx: 0.5, fy: 0.5 + (byY / s.height) * (i / 6) });
+    return steps;
+  };
+  const expectStrokeStartsAt = async (page: Page, at: number[]) => {
+    await expect.poll(async () => (await storedInk(page))[0]?.page.strokes.length, SYNC).toBe(1);
+    const d = (await storedInk(page))[0].page.strokes[0].d;
+    expect(Math.abs(d[0] / 10 - at[0])).toBeLessThan(2);
+    expect(Math.abs(d[1] / 10 - at[1])).toBeLessThan(2);
+  };
+
+  test('one finger: it was the writing hand, and the page goes back under the pen', async ({ page }) => {
+    const { s, p0 } = await zoomedFingerOff(page);
+    await fire(page, panSteps(s, 21, -120));
+    await expect.poll(async () => p0.y - (await box(page, 'paper')).y).toBeGreaterThan(50);
+    await page.waitForTimeout(WELL_AFTER_MS);
+    await fire(page, [...penLine(7, 0.3, 0.4, 0.3), { type: 'up', id: 21, kind: 'touch', fx: 0.5, fy: 0.4 }]);
+    await expectStrokeStartsAt(page, pagePointAt(s, p0, 0.3, 0.3));
+    expect(await closeSheetAndCount(page)).toBe(1);
+  });
+
+  test('a pan that lifted before the pen stays: the coach moved the page, then wrote', async ({ page }) => {
+    const { s, p0 } = await zoomedFingerOff(page);
+    await fire(page, [...panSteps(s, 21, -120), { type: 'up', id: 21, kind: 'touch', fx: 0.5, fy: 0.4 }]);
+    await expect.poll(async () => p0.y - (await box(page, 'paper')).y).toBeGreaterThan(50);
+    const moved = await box(page, 'paper');
+    await page.waitForTimeout(WELL_AFTER_MS);
+    await fire(page, penLine(7, 0.3, 0.4, 0.3));
+    await expectStrokeStartsAt(page, pagePointAt(s, moved, 0.3, 0.3));
+    expect(await closeSheetAndCount(page)).toBe(0);
+  });
+
+  test('a finger left behind by a pinch: the zoom stays, it was meant', async ({ page }) => {
+    await page.addInitScript(() => { try { localStorage.setItem('svrz_ink_finger', '0'); } catch { /* private mode */ } });
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPenPage(page);
+    await fire(page, [...pinch([21, 22], 0.5, 0.5, 0.1, 0.2, { hold: true }), { type: 'up', id: 21, kind: 'touch', fx: 0.3, fy: 0.5 }]);
+    await expect(stage(page)).toHaveAttribute('data-zoom', '2.00');
+    const s = await box(page, 'stage'); const pinched = await box(page, 'paper');
+    await page.waitForTimeout(WELL_AFTER_MS);
+    await fire(page, [...penLine(7, 0.3, 0.4, 0.3), { type: 'up', id: 22, kind: 'touch', fx: 0.7, fy: 0.5 }]);
+    await expectStrokeStartsAt(page, pagePointAt(s, pinched, 0.3, 0.3));
+    await expect(stage(page)).toHaveAttribute('data-zoom', '2.00');
+    expect(await closeSheetAndCount(page)).toBe(0);
+  });
+
+  test('a pinch with both fingers still down: the zoom stays too', async ({ page }) => {
+    await page.addInitScript(() => { try { localStorage.setItem('svrz_ink_finger', '0'); } catch { /* private mode */ } });
+    await stubSignedInApp(page);
+    await page.goto('/');
+    await openPenPage(page);
+    await fire(page, pinch([21, 22], 0.5, 0.5, 0.1, 0.2, { hold: true }));
+    await expect(stage(page)).toHaveAttribute('data-zoom', '2.00');
+    const s = await box(page, 'stage'); const pinched = await box(page, 'paper');
+    await page.waitForTimeout(WELL_AFTER_MS);
+    await fire(page, [...penLine(7, 0.3, 0.4, 0.3), { type: 'up', id: 21, kind: 'touch', fx: 0.3, fy: 0.5 }, { type: 'up', id: 22, kind: 'touch', fx: 0.7, fy: 0.5 }]);
+    await expectStrokeStartsAt(page, pagePointAt(s, pinched, 0.3, 0.3));
+    await expect(stage(page)).toHaveAttribute('data-zoom', '2.00');
+    expect(await closeSheetAndCount(page)).toBe(0);
+  });
+
+  test('two resting contacts that never moved the page, one lifts, the other slides it: still the hand, however late', async ({ page }) => {
+    const { s, p0 } = await zoomedFingerOff(page);
+    const py = (n: number) => n / s.height;
+    await fire(page, [
+      { type: 'down', id: 21, kind: 'touch', fx: 0.5, fy: 0.6, size: 40 },
+      { type: 'down', id: 22, kind: 'touch', fx: 0.56, fy: 0.6, size: 40 },
+      { type: 'up', id: 21, kind: 'touch', fx: 0.5, fy: 0.6, size: 40 },
+      { type: 'move', id: 22, kind: 'touch', fx: 0.56, fy: 0.6 + py(-4), size: 40 },
+      { type: 'move', id: 22, kind: 'touch', fx: 0.56, fy: 0.6 + py(-60), size: 40 },
+    ]);
+    await expect.poll(async () => p0.y - (await box(page, 'paper')).y).toBeGreaterThan(20);
+    await page.waitForTimeout(WELL_AFTER_MS);
+    await fire(page, [...penLine(7, 0.3, 0.4, 0.3), { type: 'up', id: 22, kind: 'touch', fx: 0.56, fy: 0.5, size: 40 }]);
+    await expectStrokeStartsAt(page, pagePointAt(s, p0, 0.3, 0.3));
+    expect(await closeSheetAndCount(page)).toBe(1);
+  });
+});
+
 test('the zoom buttons: in, the whole page, the page width, out; the canvases never grow', async ({ page }) => {
   await stubSignedInApp(page);
   await page.goto('/');

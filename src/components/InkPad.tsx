@@ -112,8 +112,13 @@ const SLOP_PX = 8;
 const ERASE_RADIUS_PX = 10;
 /** Samples closer than this on screen are merged (keeping the higher pressure). */
 const SAMPLE_MIN_PX = 0.6;
-/** Pencil pressure is smoothed a little: its noise showed as width jitter. */
-const PRESSURE_EMA = 0.5;
+/** Pencil pressure is smoothed a little: its noise showed as width jitter. The
+ *  share each new reading gets (ema = EMA · raw + (1 − EMA) · ema), so higher
+ *  follows the hand faster and shows more of the noise: was 0.5, raised with
+ *  the pen preset for a coach's voice note (05.11.2026). The smoothed value is
+ *  what a stroke stores, so a new number changes new strokes and leaves the old
+ *  ones as they were captured; nothing to migrate. */
+const PRESSURE_EMA = 0.65;
 const WHEEL_REPORT_MS = 150;
 // The tail the live layer draws ahead of the pen (predictTail below). A coach's
 // voice note, 05.11.2026: writing is harder here than in GoodNotes "with the

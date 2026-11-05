@@ -251,6 +251,52 @@ test('a browser without the API draws its real samples alone', async ({ page }) 
   expect(errors).toEqual([]);
 });
 
+test('the line does not jump at pen-up: live and committed lie on each other but for the pen\'s own end', async ({ page }) => {
+  await openPenPage(page);
+  // Small cursive with a changing pressure, sent as a hand sends it. The tail
+  // is off here: it goes at pen-up by design, its own spec is above.
+  const { stray, furthest, ink } = await page.evaluate(async () => {
+    const stage = document.querySelector('[data-testid="ink-stage"]')!;
+    const [pageCanvas, liveCanvas] = [...stage.querySelectorAll('canvas')];
+    const r = stage.getBoundingClientRect();
+    const k = liveCanvas.width / r.width;
+    const alpha = (c: HTMLCanvasElement) => {
+      const { data } = c.getContext('2d', { willReadFrequently: true })!.getImageData(0, 0, c.width, c.height);
+      const out = new Uint8Array(c.width * c.height);
+      for (let i = 0; i < out.length; i += 1) out[i] = data[i * 4 + 3];
+      return out;
+    };
+    const fire = (type: string, x: number, y: number, pressure: number, target: EventTarget) => target.dispatchEvent(new PointerEvent(type, {
+      bubbles: true, cancelable: true, isPrimary: true, pointerId: 7, pointerType: 'pen', buttons: type === 'pointerup' ? 0 : 1, pressure, clientX: r.left + x, clientY: r.top + y,
+    }));
+    const at = (i: number): [number, number, number] => {
+      const t = i / 240; const w = 2 * Math.PI * 3 * t;
+      return [120 + 120 * t + 12 * Math.sin(w + Math.PI / 2), 300 + 13 * Math.sin(2 * w), 0.15 + 0.08 * Math.sin(w * 0.7)];
+    };
+    const N = 240;
+    fire('pointerdown', ...at(0), pageCanvas);
+    for (let i = 1; i <= N; i += 1) fire('pointermove', ...at(i), pageCanvas);
+    await new Promise((done) => requestAnimationFrame(done));
+    const live = alpha(liveCanvas);
+    fire('pointerup', ...at(N), window);
+    await new Promise((done) => requestAnimationFrame(done));
+    const committed = alpha(pageCanvas);
+    const [tx, ty] = at(N);
+    let strayCount = 0; let far = 0; let inked = 0;
+    const w = liveCanvas.width;
+    for (let i = 0; i < live.length; i += 1) {
+      if (live[i] > 128) inked += 1;
+      if (Math.abs(live[i] - committed[i]) <= 128) continue;
+      const d = Math.hypot((i % w) / k - tx, Math.floor(i / w) / k - ty);
+      far = Math.max(far, d);
+      if (d > 8) strayCount += 1;
+    }
+    return { stray: strayCount, furthest: far, ink: inked };
+  });
+  expect(ink).toBeGreaterThan(500);
+  expect(stray, `furthest difference ${furthest.toFixed(1)} CSS px from the pen`).toBe(0);
+});
+
 test('the page line counts what the browser offered and what was drawn, for the pen only', async ({ page }) => {
   await openPenPage(page);
   // Two offered on every pen move, the second always out of reach.

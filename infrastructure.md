@@ -1146,8 +1146,8 @@ protection is disjoint windows and the table below.
 | **Mon 04:00** | `vm_sync` (`vm-sync-check.mjs`) | wiedisync | `VM_ROLE_CLUB` `4cdade68…`, + `SPIELPLANER` `ed24d37c…` for contacts |
 | **daily 04:30** | `svrz_sync` (`svrz-scheduling-sync.mjs`) | wiedisync | same |
 | **every 30 min** | `vm_sync` watchdog retry | wiedisync | same |
-| **every 5 min** | Einsatzliste push, for a game ~60 min out | wiedisync | club — claims (since 2026-09-12) |
-| **every 5 min** (`2-59/5`) for a game at kickoff −2 h (teams without the automatic push, since wiedisync v2.61.0) and at −45 min, **prod only**, skipped inside svrz_rc's windows (22:00–00:59 UTC, :05–:30 at 10/11/14/15 UTC) | **match-sheet Einsatzliste check** (`vm-sheet-check.js`, cron in `kscw-hooks`) — ONE login + one read per game at each of those moments, stored in `game_vm_sheets` (migration 396). Every sheet surface (match sheet, Show IDs, live scoring, result participant check) reads the stored copy: opening a sheet no longer touches VM. Waits a tick while that game's Einsatzliste push is `pending`; busy account → nothing read, next tick retries | wiedisync | club — claims `vm-nomination:read` per read (since 2026-09-29; until then every sheet open read VM live, cached 60 s) |
+| **every 5 min**, skipped inside our windows (22:00–00:59 UTC, :05–:30 at 10/11/14/15 UTC, since wiedisync v2.63.0) | Einsatzliste push, first attempt 24 h before kickoff (since wiedisync v2.63.0), retries until −35 min | wiedisync | club — claims (since 2026-09-12) |
+| **every 5 min** (`2-59/5`) for a game at kickoff −2 h (since wiedisync v2.61.0; teams with the automatic push too since v2.63.0) and at −45 min, **prod only**, skipped inside svrz_rc's windows (22:00–00:59 UTC, :05–:30 at 10/11/14/15 UTC) | **match-sheet Einsatzliste check** (`vm-sheet-check.js`, cron in `kscw-hooks`) — ONE login + one read per game at each of those moments, stored in `game_vm_sheets` (migration 396). Every sheet surface (match sheet, Show IDs, live scoring, result participant check) reads the stored copy: opening a sheet no longer touches VM. Waits a tick while that game's Einsatzliste push is `pending`; busy account → nothing read, next tick retries | wiedisync | club — claims `vm-nomination:read` per read (since 2026-09-29; until then every sheet open read VM live, cached 60 s) |
 | on demand, the sheet's window (coach −6h…+3h, scorer −40 min…+3h, admins any time), **refused inside svrz_rc's windows** | **"Recheck Volleymanager"** on the match sheet and Show IDs (`POST /kscw/scorer/game/:gameId/vm-check`) — one read, at most once a minute per game, never waits: busy account → 409 | wiedisync | club — claims `vm-nomination:read` (since 2026-09-29) |
 | on demand, kickoff +3h…+14d, EXCEPT 22:00–00:59 UTC and :05–:30 at 10/11/14/15 UTC | **game result report** (`POST /kscw/game-result/:gameId`, a member's "Report result" / "Confirm result" tap in the game modal) — spawns `vm-push-result.mjs` detached; busy account → 409 `vm_account_busy`, the member retries. **Honours the svrz_rc windows:** a tap inside one is stored and queued (`vm_result_status='pending'`, `vm_result_error='queued_window'`, no claim, no spawn) and goes out at the next :35 sweep outside a window; the worker re-checks the window before its login and again right before the write, and hands the row back to the queue if it hits one | wiedisync | club — claims `game-result:push` until the child **exits** (since 2026-09-29; windows since 2026-09-29) |
 | on demand, kickoff +3h…+14d, EXCEPT 22:00–00:59 UTC and :05–:30 at 10/11/14/15 UTC | **game result read** (`GET /kscw/game-result/:gameId`, when a participant opens the game modal) — one login + two GETs (`vm-game-result.js`, ≤8 s each, cached 60 s per game, never waits: busy account → stored state). Inside an svrz_rc window it does not read at all and serves the stored state | wiedisync | club — claims `vm-result:read`, released in `finally` (since 2026-09-29) |
@@ -1182,8 +1182,11 @@ Einsatzliste push has nothing to fire for either. wiedisync's crons carry no
 timezone argument and its code comments state UTC.
 
 ⚠ **The residual risk, and why it is accepted.** wiedisync's Einsatzliste push
-(`*/5 * * * *` → `vm-push-nomination.mjs`) is event-driven: it fires ~60 min
-before any KSCW kickoff, so no window on either side can fence it. Since
+(`*/5 * * * *` → `vm-push-nomination.mjs`) is event-driven: it fires 24 h before
+any KSCW kickoff, with retries until 35 min before. Since wiedisync v2.63.0 the
+cron skips our windows, because it has a day to file in. Our hourly poll runs
+outside those windows, so it can still meet the push, and a coach's manual push
+is not fenced at all. Since
 2026-09-12 it does take their own `claimVmAccount` (both the cron and the manual
 `POST /kscw/games/:id/nomination-push`), which removes the collision with *their*
 `vm_sync` and `svrz_sync` — but that claim is process-local to their Directus, so
@@ -1194,8 +1197,9 @@ this is on lenovoserver, and coupling the two at runtime buys less than it costs
 The mitigations instead are: pick dead hours (above), keep every role hold as
 short as possible, and never leave the account resting in a role we chose.
 
-In practice the exposure is small and bounded: their push only runs in the hour
-before a KSCW game, we hold `RefAdmin:Referee` for seconds per poll, and our
+In practice the exposure is small and bounded: their push takes about 10 s per
+game and stays out of our windows, we hold `RefAdmin:Referee` for seconds per
+poll, and our
 hourly poller skips the 04:00–05:00 UTC block that belongs to them. If a börse
 poll ever reads plausible-but-wrong rows on a Saturday afternoon, this is the
 first thing to suspect.

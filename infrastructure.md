@@ -1122,12 +1122,13 @@ blanked, so 400 copies of one failure collapse into a single row).
 ### ⚠ The shared VolleyManager account — read before touching ANY VM job
 
 There is **one** VolleyManager login (`luca_canepa`), and every entry point lives
-inside it. Two codebases use it:
+inside it. Three codebases use it:
 
 | project | what runs | where |
 |---|---|---|
 | **svrz_rc** (this repo) | games sync (01:00 + 12:15/16:15 Zürich), hourly SR-Börse poll, contact sync, auth check | API container, lenovoserver |
 | **wiedisync** | `vm_sync`, `svrz_sync`, game/nomination pushes, result reports, sheet reads | Directus **prod container only**, hetzner — since 2026-10-11 the dev container never logs in (wiedisync `external-accounts.js`, fail-closed) |
+| **OpenVolley** | eScoresheet schedule sync (`svrz_games`, `escoresheet/backend/lib/vmSync.js`), ~1 min | backend container, lenovoserver (`/opt/openvolley`) |
 | kscw-website | **nothing** — it only *links* to volleyball.ch, holds no credentials. Keep it that way. |
 
 VM keeps the active role **per account, not per session**, and it persists across
@@ -1153,6 +1154,7 @@ protection is disjoint windows and the table below.
 | on demand, kickoff +3h…+14d, EXCEPT 22:00–00:59 UTC and :05–:30 at 10/11/14/15 UTC | **game result report** (`POST /kscw/game-result/:gameId`, a member's "Report result" / "Confirm result" tap in the game modal) — spawns `vm-push-result.mjs` detached; busy account → 409 `vm_account_busy`, the member retries. **Honours the svrz_rc windows:** a tap inside one is stored and queued (`vm_result_status='pending'`, `vm_result_error='queued_window'`, no claim, no spawn) and goes out at the next :35 sweep outside a window; the worker re-checks the window before its login and again right before the write, and hands the row back to the queue if it hits one | wiedisync | club — claims `game-result:push` until the child **exits** (since 2026-09-29; windows since 2026-09-29) |
 | on demand, kickoff +3h…+14d, EXCEPT 22:00–00:59 UTC and :05–:30 at 10/11/14/15 UTC | **game result read** (`GET /kscw/game-result/:gameId`, when a participant opens the game modal) — one login + two GETs (`vm-game-result.js`, ≤8 s each, cached 60 s per game, never waits: busy account → stored state). Inside an svrz_rc window it does not read at all and serves the stored state | wiedisync | club — claims `vm-result:read`, released in `finally` (since 2026-09-29) |
 | **hourly at :35**, EXCEPT 22:00–00:59 UTC and :05–:30 at 10/11/14/15 UTC | **result sweep** — first sends up to 5 **queued result pushes** (above), one worker at a time through the endpoint's `spawnResultPush`; then a READ-ONLY opponent-report read for ≤15 games between kickoff +3h and +14d (`kscw-hooks`, in-process; each read capped at 30 s, the run stops at the first failed read); the reads never file or confirm | wiedisync | club — each queued push claims `game-result:push` until its child exits; the reads claim `vm_result_sweep`, released in `finally` (since 2026-09-29) |
+| **daily 22:30 UTC** | OpenVolley schedule sync (until 2026-11-09 06:00 Zurich, without a role switch: under the club role it got HTTP 403 on the referee page most days from 2026-10-23) — switches into `RefereeDelegate` itself, inside svrz_rc's referee-role window | OpenVolley | `RefereeDelegate` `e693b8cf…` (the same as svrz_rc's games sync) |
 | **daily 23:00 / 00:00 UTC** | games sync (`0 1 * * *` Europe/Zurich, `VM_SYNC_CRON`) | svrz_rc | `RefereeDelegate` `e693b8cf…` |
 | **daily 10:15 + 14:15 UTC** (summer) / **11:15 + 15:15 UTC** (winter) | games refresh — the same sync again at 12:15 and 16:15 Europe/Zurich (at :15 since 2026-09-28, off the watchdog's :00/:30) (`VM_SYNC_REFRESH_HOURS`, default `12,16`), minutes per run | svrz_rc | `RefereeDelegate` `e693b8cf…` |
 | **hourly, round the clock, EXCEPT 04:00–04:59 UTC** | SR-Börse poll (`VM_BOERSE_POLL_MINUTES`, default 60) — interval counted from boot, so the minute moves with each deploy; plus one run 90 s after boot, which obeys the same skip (since 2026-09-28) | svrz_rc | `RefAdmin:Referee` for seconds, then restores the role it found |

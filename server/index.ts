@@ -62,6 +62,7 @@ import {
 import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
 import { fetchBoerseOffers, planReconcile, gameHolder, boersePollMustSkip, boerseFailureLevel, boerseRecovered, type BoerseOfferRow } from './boerse.ts';
+import { nudgeStep, dueNudgeStep, matchEndedAt, nudgeAgo, NUDGE_DAY_MS, NUDGE_MAX_DAYS } from './reportNudge.ts';
 import { handedOverIds, pickSwitch, switchExpiry, switchOpen, switchSettlement, type HandOver, type SlotBooking } from './switchRequests.ts';
 import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, heldGameChange, missingHeldGames, CREW_RELEASE_MIN_DAYS, type HeldGameChange, type HeldGameSide, type HeldSlot, type MissingGamesState } from './gamesSync.ts';
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
@@ -14526,6 +14527,138 @@ async function markRemindersSent(plans: ReminderPlan[], stamp: (plan: ReminderPl
   });
 }
 
+// ── "Your report is still open" nudges to the holding RC ──────────────
+// Rules (24 h, 48 h, 5 days, then daily from day 7) live in reportNudge.ts.
+// State: app_settings.report_nudge_sent = { gameId: lastStepMailed }, so a
+// step goes out once per game; an entry is dropped once the game has no open
+// role any more (or is past the cap), which also lets a re-opened report start
+// over. Off with app_settings.report_nudge_enabled = '0'; in test mode the mail
+// goes to FEEDBACK_TEST_RECIPIENT only, and state is left alone.
+const REPORT_NUDGE_KEY = 'report_nudge_sent';
+
+async function runReportNudges(): Promise<{ sent: number; open: number; suppressed: boolean }> {
+  if (asText((await getSettingRecord('report_nudge_enabled'))?.value) === '0') return { sent: 0, open: 0, suppressed: true };
+  await ensureAdminAuth();
+  const testMode = await isEmailTestMode();
+  const testRecipient = asText(process.env.FEEDBACK_TEST_RECIPIENT);
+  if (testMode && !testRecipient) return { sent: 0, open: 0, suppressed: true };
+
+  const now = Date.now();
+  const earliest = new Date(now - (NUDGE_MAX_DAYS + 2) * NUDGE_DAY_MS).toISOString();
+  const latest = new Date(now).toISOString();
+  const rows = await withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
+    filter: `match_date >= "${earliest.slice(0, 10)}" && match_date < "${latest.slice(0, 10)}T23:59:59Z" && (assigned_rc_id != "" || assigned_rc != "")`,
+    sort: 'match_date',
+  }));
+  const people = await getActiveRcPeople().catch(() => [] as ActiveRcPerson[]);
+  const coachees = await getCoacheeIndex();
+  const manualIds = await getManualGameIds();
+
+  const sentRec = await getSettingRecord(REPORT_NUDGE_KEY);
+  let sentMap: Record<string, number> = {};
+  try { sentMap = sentRec ? JSON.parse(asText(sentRec.value)) as Record<string, number> : {}; } catch { sentMap = {}; }
+  const next: Record<string, number> = {};
+  const dueByCoach = new Map<string, Array<{ game: AnyRecord; step: number; roles: string[] }>>();
+  let open = 0;
+
+  for (const game of rows) {
+    if (manualIds.has(String(game.id)) && !testMode) continue; // a Testspiel is nobody's duty
+    const kickoff = new Date(asText(game.match_date)).getTime();
+    if (!Number.isFinite(kickoff)) continue;
+    const season = seasonOfGame(game.match_date);
+    const closed = Array.isArray(game.feedback_closed_roles) ? (game.feedback_closed_roles as unknown[]).map(asText) : [];
+    const handed = handedOverIds(game);
+    const roles = refereeSlotQueries(game).flatMap((q, i) => {
+      const label = i === 0 ? '1. SR' : '2. SR';
+      if (closed.includes(label)) return [];
+      const row = coachees.find(season, q).row;
+      return row && !handed.has(String(row.id)) ? [label] : [];
+    });
+    if (roles.length === 0) continue; // nothing left to report on this game
+    const age = now - matchEndedAt(kickoff);
+    if (age < NUDGE_DAY_MS) continue;
+    const id = String(game.id);
+    const last = Number(sentMap[id] ?? 0) || 0;
+    if (nudgeStep(age) > 0) next[id] = last;
+    open += 1;
+    const step = dueNudgeStep(age, last);
+    if (!step) continue;
+    const holder = gameHolder(game, people);
+    if (!holder?.email) continue;
+    const list = dueByCoach.get(holder.id) ?? [];
+    list.push({ game, step, roles });
+    dueByCoach.set(holder.id, list);
+  }
+
+  let sent = 0;
+  for (const [coachId, items] of dueByCoach) {
+    const coach = people.find((p) => p.id === coachId);
+    if (!coach?.email) continue;
+    try {
+      const lines = items.map(({ game, step, roles }) => {
+        const when = fmtDateDe(asText(game.match_date));
+        const teams = `${asText(game.home_team)} – ${asText(game.away_team)}`;
+        const ago = nudgeAgo(step);
+        return { teams, when, no: asText(game.match_no), league: asText(game.league), roles: roles.join(' + '), ago };
+      });
+      const many = lines.length > 1;
+      const lead = many ? 'Bei diesen Spielen fehlt noch ein Bericht:' : 'Bei diesem Spiel fehlt noch ein Bericht:';
+      const leadEn = many ? 'These games still have a report missing:' : 'This game still has a report missing:';
+      const panels = lines.map((l) => [
+        `<div style="margin:12px 0;padding:14px 16px;background:${MAIL_PANEL};border:1px solid ${MAIL_LINE};border-radius:10px">`,
+        `<div style="${mailText(15, MAIL_INK, 'font-weight:700;')}">${escapeHtml(l.teams)}</div>`,
+        `<div style="${mailText(13, MAIL_INK_SOFT, 'margin-top:4px;')}">${escapeHtml(l.when)} · ${escapeHtml(l.league)} · #${escapeHtml(l.no)}</div>`,
+        `<div style="${mailText(13, MAIL_INK, 'margin-top:8px;font-weight:600;')}">Offen: ${escapeHtml(l.roles)}</div>`,
+        `<div style="${mailText(12, MAIL_INK_SOFT)}">Seit ${escapeHtml(l.ago.de)} nach dem Spiel</div>`,
+        `<div style="${mailText(12, MAIL_MUTED)}">Open for ${escapeHtml(l.ago.en)} since the match</div>`,
+        `</div>`,
+      ].join('')).join('');
+      const appUrl = `${MAIL_APP_URL.replace(/\/+$/, '')}/home`;
+      const body = [
+        bilingualBlockHtml(`Hallo ${coach.firstName || coach.fullName}`, `Hello ${coach.firstName || coach.fullName}`),
+        bilingualBlockHtml(lead, leadEn),
+        panels,
+        bilingualBlockHtml(
+          'Bitte schliesse den Bericht ab und sende ihn. Du bekommst diese Erinnerung nach 24 Stunden, 48 Stunden und 5 Tagen, ab Tag 7 täglich — bis der Bericht gesendet ist.',
+          'Please finish and send the report. You get this reminder after 24 hours, 48 hours and 5 days, and daily from day 7 — until the report is sent.',
+        ),
+        `<div style="margin-top:18px"><a href="${escapeHtml(appUrl)}" style="display:inline-block;padding:11px 24px;background:${MAIL_BRAND};color:#ffffff;text-decoration:none;border-radius:10px;${mailText(14, '#ffffff', 'font-weight:600;line-height:1;')}">Zur App · Open the app</a></div>`,
+      ].join('');
+      const textOf = (l: typeof lines[number]) => `${l.teams}\n${l.when} · ${l.league} · #${l.no}\nOffen: ${l.roles} · seit ${l.ago.de}`;
+      const textOfEn = (l: typeof lines[number]) => `${l.teams}\n${l.when} · ${l.league} · #${l.no}\nOpen: ${l.roles} · for ${l.ago.en}`;
+      const subject = many
+        ? `Offene Berichte (${lines.length}) · Reports still open`
+        : `Bericht offen: ${lines[0].teams} · Report still open`;
+      await sendMailResilient({
+        from: MAIL_FROM,
+        to: testMode ? testRecipient : coach.email,
+        subject: testMode ? `[TEST → ${coach.email}] ${subject}` : subject,
+        html: emailShell(body),
+        text: bilingualText(`${lead}\n\n${lines.map(textOf).join('\n\n')}\n\n${appUrl}`, `${leadEn}\n\n${lines.map(textOfEn).join('\n\n')}\n\n${appUrl}`),
+        attachments: emailAttachments(),
+      });
+      sent += 1;
+      if (!testMode) {
+        for (const it of items) next[String(it.game.id)] = it.step;
+        void pushToCoach(coach.id, {
+          title: many ? `${lines.length} Berichte offen` : `Bericht offen: ${lines[0].teams}`,
+          body: many ? 'Bei mehreren Spielen fehlt noch der Bericht.' : `Offen: ${lines[0].roles}`,
+          url: appUrl, tag: `report-nudge-${coach.id}`,
+        });
+      }
+    } catch (error) {
+      log.error('reportNudge.send', 'could not mail one coach', { coachId, error: safeError(error) });
+    }
+  }
+
+  if (!testMode) {
+    await withSettingLock(REPORT_NUDGE_KEY, async () => {
+      await setSetting(REPORT_NUDGE_KEY, JSON.stringify(next));
+    });
+  }
+  return { sent, open, suppressed: false };
+}
+
 // One game's reminder, sent now, by the coach who holds it.
 //
 // The daily job runs at 10:00 the day before and is off unless the commission
@@ -15948,6 +16081,11 @@ app.listen(port, () => {
     } catch (error) {
       log.error('signature.prune', 'expired signature sessions could not be deleted', { error });
     }
+  });
+
+  scheduleDaily(process.env.REPORT_NUDGE_CRON || '0 9 * * *', 'open report nudges', async () => {
+    const r = await runReportNudges();
+    console.log(r.suppressed ? '[report-nudge] off — nothing sent' : `[report-nudge] ${r.sent} coach mail(s), ${r.open} game(s) open`);
   });
 
   scheduleDaily(REMINDER_CRON, 'match reminder', async () => {

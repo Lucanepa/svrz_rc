@@ -57,7 +57,7 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "tailwind-merge": "^3.5.0",
-    "vite-plugin-pwa": "^1.2.0",
+    "vite-plugin-pwa": "^2.0.0",
     "web-push": "^3.6.7",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"
   },
@@ -81,6 +81,12 @@
     "wrangler": "^4.113.0"
   },
   "overrides": {
-    "@babel/plugin-transform-runtime": "^7.29.0"
+    "@babel/plugin-transform-runtime": "^7.29.0",
+    "pptxgenjs": {
+      "image-size": "^2.0.3"
+    },
+    "workbox-build": {
+      "glob": "^14.0.2"
+    }
   }
 }

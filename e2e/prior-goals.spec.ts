@@ -151,3 +151,75 @@ test("a single colleague's observation shows the list, never the form", async ({
   await expect(page.getByRole('dialog').getByTestId('history-redacted')).toHaveCount(1);
   await expect(page.getByText(/bereits beobachtet|already been observed/)).toHaveCount(0);
 });
+
+// Since 19.11.2026 (the chair: "for a 2nd visit the last RC's information
+// should be visible, the full form", also from the season before): the panel
+// shows the whole last report, and a colleague's report opens read-only.
+const REPORTS = {
+  observed: 2,
+  prior: [{ id: 'fb9', date: '2026-04-02', role: '1. SR', rc: 'Beat Brunner', goals: 'Näher am Netz.' }],
+  reports: [
+    {
+      id: 'fb9', date: '2026-04-02', role: '1. SR', rc: 'Beat Brunner',
+      motivation: 'up', einstufung: 'check', spielniveau: 'normal', srZiel: '2L', secondBesuch: 'Y', secondBesuchRole: '1SR',
+      wantsPromotion: true, wantsCandidate: false,
+      highlights: 'Sehr <b>ruhig</b>.', improvements: 'Ballkontrolle zögerlich.', goals: 'Näher am Netz.', bemerkungen: 'Gutes Gespräch.',
+    },
+    {
+      id: 'fb8', date: '2025-11-02', role: '2. SR', rc: RC.name,
+      motivation: 'check', einstufung: 'check', spielniveau: 'leicht', srZiel: '', secondBesuch: 'N', secondBesuchRole: '',
+      wantsPromotion: false, wantsCandidate: false, highlights: '', improvements: '', goals: '', bemerkungen: 'Erster Besuch.',
+    },
+    {
+      // Outside the full-form rule: the goals alone, and said so.
+      id: 'fb7', date: '2023-10-01', role: '1. SR', rc: 'Beat Brunner', full: false,
+      motivation: '', einstufung: '', spielniveau: '', srZiel: '', secondBesuch: '', secondBesuchRole: '',
+      wantsPromotion: false, wantsCandidate: false, highlights: '', improvements: '', goals: 'Pfiff früher.', bemerkungen: '',
+    },
+  ],
+};
+
+test('a fresh observation shows the whole last report, across seasons, older ones on request', async ({ page }) => {
+  await stub(page, REPORTS);
+  await openFeedbackForm(page);
+  const panel = page.getByTestId('prior-goals');
+  const shown = panel.getByTestId('prior-report');
+  await expect(shown).toHaveCount(1);
+  await expect(shown.first()).toContainText('02.04.2026 · 1. SR · RC Beat Brunner');
+  await expect(shown.first()).toContainText(/Motivation: Hoch|Motivation: High/);
+  await expect(shown.first()).toContainText(/Einstufung: Gleich|Outlook: Same level/);
+  await expect(shown.first()).toContainText(/SR-Ziel: 2L|Referee goal: 2L|2L/);
+  await expect(shown.first()).toContainText('Ballkontrolle zögerlich.');
+  await expect(shown.first()).toContainText('Gutes Gespräch.');
+  await expect(shown.first().locator('b')).toHaveText('ruhig');
+  await panel.getByTestId('prior-goals-older').click();
+  await expect(shown).toHaveCount(3);
+  await expect(shown.nth(1)).toContainText('Erster Besuch.');
+  await expect(shown.nth(1).getByTestId('prior-goals-only')).toHaveCount(0);
+  await expect(shown.nth(2)).toContainText('Pfiff früher.');
+  await expect(shown.nth(2).getByTestId('prior-goals-only')).toBeVisible();
+  await expect(shown.nth(2)).not.toContainText(/Motivation/);
+});
+
+const COLLEAGUE = {
+  ...OWN, id: 'fb-col', rc_name: 'Beat Brunner', rc_id: 'rc-other', submitted_at: '2025-11-03T10:00:00Z', colleague: true,
+  feedback_json: { ...OWN.feedback_json, results: { ...OWN.feedback_json.results, bemerkungen: 'Bericht der Kollegin.' } },
+  expand: { game: { id: 'g-col', match_no: '77', league: '2L', match_date: '2025-11-02', location: 'Y', home_team: 'C', away_team: 'D', first_referee: COACHEE.full_name, second_referee: '' } },
+};
+
+test("a colleague's full report opens read-only: no PDF, no note to the chair", async ({ page }) => {
+  await stubSignedInApp(page);
+  await page.route('**/api/coachees/*/feedbacks', (r) => r.fulfill({ json: [OWN, COLLEAGUE] }));
+  await page.goto(`/feedbacks/${COACHEE.id}`);
+  const dialog = page.getByRole('dialog');
+  const theirs = dialog.getByTestId('history-colleague');
+  await expect(theirs).toContainText('#77 · C vs D');
+  await expect(theirs).toContainText(/Bericht von Beat Brunner — nur lesen|Report by Beat Brunner — read only/);
+  // The PDF stays the author's: one button, the own report's.
+  await expect(dialog.getByTestId('history-sent-pdf')).toHaveCount(1);
+  await theirs.click();
+  await expect(page.getByText(/bereits beobachtet|already been observed/)).toBeVisible();
+  await expect(page.getByText('Bericht der Kollegin.').first()).toBeVisible();
+  await expect(page.getByText(/Vertrauliche Notiz an die RC-Vorsitzende|Private note to the RC president/)).toHaveCount(0);
+  await expect(page.getByTestId('sent-pdf')).toHaveCount(0);
+});

@@ -60,6 +60,7 @@ import { computeBudget, normalizeBudget } from '../lib/budget';
 import { OBSERVATION_GOAL, PAID_CAP, goalForMandate, type RcMandate, type RcMandateMap , type RcOverviewEntry, type EligibleGame, type rcCoachSummary, type rcCoachSummaryGame } from '../types';
 import LevelText from './LevelText';
 import StatisticsAdmin from './StatisticsAdmin';
+import ChairNotes from './ChairNotes';
 import { CrewChip, GameFlagChips, MatchResult, roleObserved, type GameMarks } from './GameMarks';
 import { BoerseNote, boerseRowClass, inBoerse } from './BoerseNote';
 import { GameList, GameRow, MetaChip, SectionHead, type RowTone } from './GameRow';
@@ -3847,92 +3848,10 @@ function SurveyAdmin({ t, lang }: { t: T; lang: Lang }) {
 // What a coach wanted the chair to know but not the referee. Read-only here on
 // purpose — same as the survey tab, this is somebody's candid word, not a
 // record to be edited. Only the note's author can change it, back in the app.
-function PresidentNotesAdmin({ t, lang }: { t: T; lang: Lang }) {
-  const [rows, setRows] = useState<PresidentNote[] | null>(null);
-  // The 4.4.10 Rückmeldungen. Same tab, because they are the same promise from
-  // the chair's side — a coach writing to her about a referee nobody observed —
-  // and a separate list, because they are not notes ON an observation: these
-  // games have no feedback at all, which is the point of the rule.
-  const [srRows, setSrRows] = useState<RcGameNote[] | null>(null);
-  const [err, setErr] = useState('');
-  const [srErr, setSrErr] = useState('');
-
-  useEffect(() => {
-    listPresidentNotes().then(setRows).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
-    // Its own error line: an empty SR list must not read as "the notes above
-    // failed to load", and neither list should take the other down.
-    loadRcGameNotes().then(setSrRows).catch((e) => setSrErr(e instanceof Error ? e.message : String(e)));
-  }, []);
-
-  const fmtDate = (value: string) => {
-    return dayLabel(value, { year: true }) || value;
-  };
-
-  return (
-    <div className="flex flex-col gap-4">
-      <p className="text-xs text-stone-500 leading-snug">{t.notesHint}</p>
-      {err && <p className="text-sm text-red-600">{err}</p>}
-      {!rows && !err && <SkeletonRows />}
-      {rows?.length === 0 && <p className="text-sm text-stone-400 py-8 text-center">{t.notesEmpty}</p>}
-      {rows?.map((r) => (
-        <div key={r.id} className="bg-white rounded-2xl shadow-card border border-stone-200/70 p-5">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pb-3 mb-3 border-b border-stone-100">
-            <span className="text-sm font-semibold text-stone-800">{r.coacheeName || '—'}</span>
-            {r.gameDate && <span className="text-xs text-stone-400">{fmtDate(r.gameDate)}</span>}
-            {r.league && <span className="text-xs text-stone-400">{r.league}</span>}
-            {/* The number the chair finds the game by in VolleyManager. */}
-            {r.matchNo && <span className="text-xs tabular-nums text-stone-400">#{r.matchNo}</span>}
-            {r.teams && <span className="text-xs text-stone-500 truncate">{r.teams}</span>}
-            {/* Usually the same person; when they differ an admin wrote on a
-                coach's observation, and reading it as the coach's would mislead. */}
-            <span className="ml-auto text-xs text-stone-500">
-              {r.authorName && r.authorName !== r.rcName ? t.notesBy(r.authorName, r.rcName) : r.rcName}
-            </span>
-          </div>
-          {/* Confidential to the chair; the server already keeps it out of its
-              own request log, and the click logger must do the same. Rich
-              text: drawn from the restricted subset, never as raw HTML. */}
-          <div data-log-redact><RichView value={r.note} className="text-sm text-stone-800" /></div>
-        </div>
-      ))}
-
-      <div className="pt-2">
-        <h3 className="text-sm font-semibold text-stone-800">{t.srNotes}</h3>
-        <p className="text-xs text-stone-500 leading-snug mt-1">{t.srNotesHint}</p>
-      </div>
-      {srErr && <p className="text-sm text-red-600">{srErr}</p>}
-      {!srRows && !srErr && <SkeletonRows />}
-      {srRows?.length === 0 && <p className="text-sm text-stone-400 py-8 text-center">{t.srNotesEmpty}</p>}
-      {srRows?.map((r) => (
-        <div key={r.id} className="bg-white rounded-2xl shadow-card border border-stone-200/70 p-5">
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 pb-3 mb-3 border-b border-stone-100">
-            {/* Who was observed, and in which slot — a 4.4.10 note is always
-                about the OTHER whistle, so the roles are half the context. */}
-            <span className="text-sm font-semibold text-stone-800">{r.coacheeName || '—'}</span>
-            {r.coacheeRole && <span className="text-xs text-stone-400">{r.coacheeRole}</span>}
-            {r.gameDate && <span className="text-xs text-stone-400">{fmtDate(r.gameDate)}</span>}
-            {r.league && <span className="text-xs text-stone-400">{r.league}</span>}
-            {/* The number the chair finds the game by in VolleyManager — the
-                notes above draw it, and this list did not. */}
-            {r.matchNo && <span className="text-xs tabular-nums text-stone-400">#{r.matchNo}</span>}
-            {r.teams && <span className="text-xs text-stone-500 truncate">{r.teams}</span>}
-            {r.location && <span className="text-xs text-stone-400 truncate">{r.location}</span>}
-            <GameFlagChips game={{ isManual: r.isManual }} lang={lang} />
-            <span className="ml-auto text-xs text-stone-500">{r.rcName}{r.rcRole ? ` (${r.rcRole})` : ''}</span>
-          </div>
-          {/* 7.3's report, arriving with the note instead of as a WhatsApp
-              message somebody has to remember to send. It is the one thing on
-              this card that asks her to go and do something. */}
-          {r.rolesSwapped && (
-            <p className="mb-2 rounded border border-amber-200 bg-amber-50 px-2 py-1 text-xs text-amber-900">
-              {t.srNotesSwapped}
-            </p>
-          )}
-          <p data-log-redact className="text-sm text-stone-800 whitespace-pre-wrap">{r.note}</p>
-        </div>
-      ))}
-    </div>
-  );
+// Since 19.11.2026 the chair's own layer sits on top (ChairNotes): date order,
+// filters, a read tick and her tags per referee.
+function PresidentNotesAdmin({ lang }: { t: T; lang: Lang }) {
+  return <ChairNotes lang={lang} />;
 }
 
 // ── The forms database ────────────────────────────────────────────────

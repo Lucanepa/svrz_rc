@@ -487,6 +487,35 @@ for that coach only — not a console session), `passkey/login/options` +
 coach's own). Refusals carry a `code` the app acts on: `challenge`,
 `unknown`, `outdated`, `inactive`, `invalid`, `duplicate`, `limit`.
 
+### `president_note_reads` + `president_referee_marks` — the chair's layer (since 2026-11-19)
+
+The chair's own working layer over RC-Notizen. `president_note_reads`: one row
+per note she ticked as read, `ref` = `fb:<feedback id>` (a note on an
+observation) or `gn:<rc_game_notes id>` (a 4.4.10 Rückmeldung), unique; no row
+= unread. `president_referee_marks`: her tags (JSON array, ≤ 20 × 40 chars)
+and memo (≤ 4000 chars) per referee, `referee_key` = `sv:<SV number>` or
+`name:<folded name>` for a coachee row not linked to the register, unique;
+saving both empty deletes the row. Born on Postgres
+(`prisma/migrations/20261119120000_president_board`), applied by `db:migrate`
+at container start. Every route sits behind the chair's console password
+(`requireSurveyReader`); admins cannot read it either: `PUT /api/president-reads`,
+`GET`/`PUT /api/president-marks` (body kept out of the request log),
+`GET /api/president-overview?season=` (one row per coachee of the season with
+the last form's ticks). `GET /api/president-notes` and `GET /api/rc-game-notes`
+now also carry `read`, `refereeKey`, `refereeLevel`, `refereeStage`, `groups`
+(and the notes `results`, the coach's ticks), newest game first. Rules:
+`server/presidentBoard.ts`.
+
+Same day: a coach may read a colleague's earlier report on the same referee in
+full (`/api/coachees/:id/feedbacks` → `colleague: true`, signatures and PDF
+left out, opened read-only), and `/api/coachees/:id/prior-goals` adds
+`reports` (earlier reports' ticks and written blocks, newest first, across
+seasons; `full: false` = goals only) next to the unchanged `prior` the
+installed apps read. Full only when the earlier report said "Weiterer Besuch:
+Ja", or the referee is Neu-SR / Beförderung? / Beförderung and the report is
+from this season or the last; otherwise goals only (`redacted: true`), as
+before. Rule: `server/priorReports.ts`.
+
 ## Identity: SV number, RC id, match number (since 2026-09-16)
 
 Who a row is about is decided by a number, and the folded name is only the

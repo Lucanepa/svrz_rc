@@ -77,9 +77,12 @@ export type FeedbackRecord = {
   feedback_json?: FeedbackFormData;
   game?: string;
   coachee?: string;
-  /** A colleague's observation: the server left the assessment out and
-   *  handed over the goals alone. Nothing to open, nothing to download. */
+  /** A colleague's observation as an older server sent it: the assessment
+   *  left out, the goals alone. Nothing to open, nothing to download. */
   redacted?: boolean;
+  /** A colleague's observation in full (since 19.11.2026), signatures and PDF
+   *  left out: opened read-only, never reopened, no PDF, no president note. */
+  colleague?: boolean;
   goals?: string;
   expand?: {
     game?: {
@@ -656,7 +659,19 @@ export async function listCoacheeGames(coacheeId: string): Promise<CoacheeGame[]
  *  whichever season. `observed` counts every earlier observation, goals or
  *  not, so the form can say "observed before, nothing set" rather than nothing. */
 export type PriorGoal = { id: string; date: string; role: '1. SR' | '2. SR'; rc: string; goals: string };
-export type PriorGoals = { observed: number; prior: PriorGoal[] };
+/** One earlier report on the same person, as the next coach reads it on a
+ *  fresh form (since 19.11.2026): the ticks and the four written blocks. */
+export type PriorReport = {
+  id: string; date: string; role: '1. SR' | '2. SR'; rc: string;
+  /** false: a colleague's report outside the full-form rule (server/priorReports.ts) —
+   *  only `goals` is filled. */
+  full?: boolean;
+  motivation: string; einstufung: string; spielniveau: string; srZiel: string;
+  secondBesuch: string; secondBesuchRole: string; wantsPromotion: boolean; wantsCandidate: boolean;
+  highlights: string; improvements: string; goals: string; bemerkungen: string;
+};
+/** `reports` is absent from an older server; the panel falls back to `prior`. */
+export type PriorGoals = { observed: number; prior: PriorGoal[]; reports?: PriorReport[] };
 
 export async function loadPriorGoals(coacheeId: string): Promise<PriorGoals> {
   if (isDemoMode()) return demo.loadPriorGoals(coacheeId);
@@ -690,7 +705,22 @@ export async function listCoacheeFeedbacks(coacheeId: string): Promise<FeedbackR
 // Written by the coach on a feedback they have already filed; readable only by
 // the coach who wrote it and the RC president. Never part of feedback_json, so
 // it cannot reach the coachee's PDF or email.
-export type PresidentNote = {
+/** What the coach ticked on the form, beside the note on the chair's card. */
+export type NoteResults = {
+  role: string; motivation: string; einstufung: string; spielniveau: string; srZiel: string;
+  secondBesuch: string; secondBesuchRole: string; wantsPromotion: boolean; wantsCandidate: boolean;
+};
+/** The person and their labels, as the chair's cards show them (19.11.2026).
+ *  Absent from an older server. */
+export type ChairLabels = {
+  read?: boolean;
+  refereeKey?: string;
+  refereeLevel?: string;
+  refereeStage?: string;
+  groups?: string[];
+};
+export type PresidentNote = ChairLabels & {
+  results?: NoteResults;
   id: string; note: string; gameId: string; teams: string; league: string;
   gameDate: string; coacheeName: string; rcName: string;
   /** VolleyManager's number — what the list names the game by. Absent on an
@@ -947,6 +977,50 @@ export async function putBudget(season: number, settings: BudgetSettings): Promi
   return normalizeBudget(await r.json());
 }
 
+/** The chair's tick on a note: `note` for one on an observation, `sr` for a
+ *  4.4.10 Rückmeldung. */
+export async function setPresidentRead(kind: 'note' | 'sr', id: string, read: boolean): Promise<void> {
+  const ref = `${kind === 'note' ? 'fb' : 'gn'}:${id}`;
+  const r = await fetch(apiUrl('/api/president-reads'), {
+    method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ ref, read }),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || inUiLang('Konnte nicht gespeichert werden.', 'Could not be saved.'));
+}
+
+/** The chair's whiteboard entry for one referee: her tags and memo. */
+export type RefereeMark = { key: string; name: string; tags: string[]; memo: string; updatedAt: string };
+
+export async function listPresidentMarks(): Promise<RefereeMark[]> {
+  const r = await fetch(apiUrl('/api/president-marks'), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+/** Saves the tags and memo; both empty removes the entry (returns null). */
+export async function savePresidentMark(mark: { key: string; name: string; tags: string[]; memo: string }): Promise<RefereeMark | null> {
+  const r = await fetch(apiUrl('/api/president-marks'), {
+    method: 'PUT', credentials: 'include', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(mark),
+  });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error || inUiLang('Konnte nicht gespeichert werden.', 'Could not be saved.'));
+  return (await r.json()).mark ?? null;
+}
+
+/** One coachee of the season on the chair's overview. */
+export type PresidentOverviewRow = {
+  coacheeId: string; name: string; refereeKey: string; refereeLevel: string; refereeStage: string; groups: string[];
+  active: boolean; observations: number; lastDate: string; lastMotivation: string; lastEinstufung: string;
+  lastSrZiel: string; lastSecondBesuch: string; wantsPromotion: boolean; wantsCandidate: boolean; rcs: string[];
+};
+
+export async function loadPresidentOverview(season?: number): Promise<{ season: number; rows: PresidentOverviewRow[] }> {
+  const q = season ? `?season=${season}` : '';
+  const r = await fetch(apiUrl(`/api/president-overview${q}`), { credentials: 'include' });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
 export async function listPresidentNotes(): Promise<PresidentNote[]> {
   const r = await fetch(apiUrl('/api/president-notes'), { credentials: 'include' });
   if (!r.ok) throw new Error(await r.text());
@@ -1152,7 +1226,7 @@ export async function loadrcCoachSummary(rcName: string, season: number, rcId = 
 // the chair read it, no other coach does, and it never counts toward a season
 // target. See the block over /api/rc-games in server/index.ts.
 
-export type RcGameNote = {
+export type RcGameNote = ChairLabels & {
   id: string;
   gameId: string;
   rcId: string;

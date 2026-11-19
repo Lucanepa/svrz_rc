@@ -70,6 +70,8 @@ import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdB
 import { withGboSummary, GBO_SUMMARY_VERSION } from './gboSummary.ts';
 import { readStoredDoc, writeStoredDoc, type StoredDoc } from './docstore.ts';
 import { presidentNoteEntry, presidentNoteBelongsToAnother, type PresidentNoteEntry } from './presidentNotes.ts';
+import { fullEarlierReport } from './priorReports.ts';
+import { noteResults, refereeKeyOf, readRef, isReadRef, sanitizeTags, isEmptyMark, byGameDateDesc, MEMO_MAX, type NoteResults, type RefereeMark } from './presidentBoard.ts';
 import { identityAudit, type AuditRcPerson } from './identityAudit.ts';
 import { sniffAttachmentType, ATTACHMENT_EXTENSIONS, whistleBlocksForm, createMailCooldown, createCoalescer } from './writeGuards.ts';
 import { createCredentialReader, CredentialsUnavailableError, sameLoginName } from './credentialStore.ts';
@@ -424,6 +426,9 @@ const CONFIDENTIAL_BODY_PATHS = [
   // reaches the chair and no one else. The admin Protokoll is read by people
   // that promise excludes, so the body is reduced to shape here too.
   /^\/api\/rc-game-notes$/i,
+  // The chair's own tags and memo about a named referee (19.11.2026) — her
+  // whiteboard, which no admin reads either.
+  /^\/api\/president-marks$/i,
   // A parked draft is a coach's unfinished assessment of a named referee, and
   // parkOwner refuses an admin console session on purpose. This log is READ
   // through that same console session, so the body must not reach it by the
@@ -8730,7 +8735,165 @@ async function mailCoacheeFilePin(v: { to: string; sv: string; firstName: string
 
 app.get('/api/president-notes', requireSurveyReader, async (_req: Request, res: ExpressResponse) => {
   try {
-    res.json(await readAllPresidentNotes());
+    res.json(await readChairNotes());
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// ── The chair's working layer: read ticks, tags, the overview (19.11.2026) ──
+// Asked for by the chair: the notes in date order with the referee's level,
+// a tick for "already read", her own tags per referee ("next year N3 course")
+// and an overview she can filter by motivation and Einstufung. Everything
+// here sits behind her password, like the notes themselves; none of it is
+// readable by an RC or an admin. Rules: server/presidentBoard.ts.
+
+/** The ref of every note the chair has ticked as read. */
+async function presidentReadRefs(): Promise<Set<string>> {
+  const rows = await withCollection(['president_note_reads'], (c) => c.getFullList<AnyRecord>({ fields: 'ref' }));
+  return new Set(rows.map((r) => asText(r.ref)).filter(Boolean));
+}
+
+/** The level, Stufe and groups of a coachee row, as the chair's cards show them. */
+function coacheeLabels(coachee: Record<string, unknown> | null | undefined) {
+  return {
+    refereeKey: refereeKeyOf(coachee, normalizeName),
+    refereeLevel: asText(coachee?.referee_level),
+    refereeStage: asText(coachee?.stage),
+    groups: splitCoacheeGroups(asText(coachee?.groups)),
+  };
+}
+
+type ChairNote = PresidentNoteEntry & { id: string; read: boolean; results: NoteResults; refereeKey: string; refereeLevel: string; refereeStage: string; groups: string[] };
+
+/** Every note with what the chair's list shows beside it: the referee's level
+ *  and groups, what the coach ticked on the form, and her read tick. Newest
+ *  game first. */
+async function readChairNotes(): Promise<ChairNote[]> {
+  const rows = await withCollection(['president_notes'], (c) => c.getFullList<AnyRecord>({ sort: '-updated' }));
+  const ids = [...new Set(rows.map((r) => asText(r.feedback)).filter(Boolean))];
+  if (ids.length === 0) return [];
+  const [feedbacks, reads] = await Promise.all([
+    withCollection(collectionCandidates.refereeCoaches, (c) => c.getFullList<AnyRecord>({
+      filter: ids.map((id) => `id = "${escapeFilterValue(id)}"`).join(' || '),
+      expand: 'game,coachee',
+    })),
+    presidentReadRefs(),
+  ]);
+  const byId = new Map(feedbacks.map((f) => [String(f.id), f]));
+  const out = rows.flatMap((row): ChairNote[] => {
+    const record = byId.get(asText(row.feedback));
+    if (!record) return [];
+    const expand = (record.expand ?? {}) as Record<string, AnyRecord | undefined>;
+    const updated = new Date(asText(row.updated).replace(' ', 'T'));
+    return [{
+      id: String(record.id),
+      ...presidentNoteEntry({
+        note: asText(row.note), record, game: expand.game, coachee: expand.coachee,
+        authorName: asText(row.author_name), now: Number.isNaN(updated.getTime()) ? new Date(0) : updated,
+      }),
+      ...coacheeLabels(expand.coachee),
+      results: noteResults(record),
+      read: reads.has(readRef('note', String(record.id))),
+    }];
+  });
+  return out.sort(byGameDateDesc);
+}
+
+app.put('/api/president-reads', requireSurveyReader, async (req: Request, res: ExpressResponse) => {
+  try {
+    const body = (req.body ?? {}) as AnyRecord;
+    const ref = asText(body.ref);
+    if (!isReadRef(ref)) { res.status(400).json({ error: say('Unbekannte Notiz.', 'Unknown note.') }); return; }
+    const read = body.read !== false;
+    await withSettingLock(`president_read:${ref}`, async () => {
+      const rows = await withCollection(['president_note_reads'], (c) =>
+        c.getFullList<AnyRecord>({ filter: `ref = "${escapeFilterValue(ref)}"` }));
+      if (read && rows.length === 0) await withCollection(['president_note_reads'], (c) => c.create({ ref }));
+      if (!read) for (const row of rows) await withCollection(['president_note_reads'], (c) => c.delete(String(row.id)));
+    });
+    res.json({ ok: true, ref, read });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+function markOf(row: AnyRecord): RefereeMark {
+  return {
+    key: asText(row.referee_key),
+    name: asText(row.referee_name),
+    tags: sanitizeTags(row.tags),
+    memo: asText(row.memo),
+    updatedAt: asText(row.updated),
+  };
+}
+
+app.get('/api/president-marks', requireSurveyReader, async (_req: Request, res: ExpressResponse) => {
+  try {
+    const rows = await withCollection(['president_referee_marks'], (c) => c.getFullList<AnyRecord>({ sort: 'referee_name' }));
+    res.json(rows.map(markOf));
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+app.put('/api/president-marks', requireSurveyReader, async (req: Request, res: ExpressResponse) => {
+  try {
+    const body = (req.body ?? {}) as AnyRecord;
+    const key = asText(body.key);
+    if (!/^(sv|name):.{1,120}$/.test(key)) { res.status(400).json({ error: say('Unbekannte Person.', 'Unknown person.') }); return; }
+    const memo = asText(body.memo);
+    if (memo.length > MEMO_MAX) {
+      res.status(413).json({ error: say(`Die Notiz ist zu lang (höchstens ${MEMO_MAX} Zeichen). Gespeichert wurde nichts.`, `The note is too long (at most ${MEMO_MAX} characters). Nothing was saved.`) });
+      return;
+    }
+    const mark = { key, name: asText(body.name).slice(0, 200), tags: sanitizeTags(body.tags), memo };
+    let saved: RefereeMark | null = null;
+    await withSettingLock(`president_mark:${key}`, async () => {
+      const rows = await withCollection(['president_referee_marks'], (c) =>
+        c.getFullList<AnyRecord>({ filter: `referee_key = "${escapeFilterValue(key)}"` }));
+      const current = rows[0];
+      if (isEmptyMark(mark)) {
+        // Nothing left on it: the row goes rather than staying as an empty card.
+        for (const row of rows) await withCollection(['president_referee_marks'], (c) => c.delete(String(row.id)));
+        return;
+      }
+      const data = { referee_key: key, referee_name: mark.name || asText(current?.referee_name), tags: mark.tags, memo: mark.memo };
+      const row = current
+        ? await withCollection(['president_referee_marks'], (c) => c.update<AnyRecord>(String(current.id), data))
+        : await withCollection(['president_referee_marks'], (c) => c.create<AnyRecord>(data));
+      saved = markOf(row);
+    });
+    res.json({ ok: true, mark: saved });
+  } catch (error) { res.status(500).json({ error: safeError(error) }); }
+});
+
+// One row per coachee of the season, with what the season's observations say
+// about them — the same summaries as the admin's coachee export (counts and the
+// coach's ticks, no remark text) — so the chair sees at a glance who is highly
+// motivated and who is happy where they are.
+app.get('/api/president-overview', requireSurveyReader, async (req: Request, res: ExpressResponse) => {
+  try {
+    const season = await resolveSeason(req.query.season);
+    const [raw, goalOf] = await Promise.all([loadStatRaw(), readRcGoal()]);
+    const { observations } = buildStatInput(raw, season, goalOf, new Date());
+    const summaries = new Map(coacheeSummaries(observations).map((s) => [s.coacheeId, s]));
+    const rows = raw.coachees
+      .filter((c) => coacheeRowSeason(c.season) === season)
+      .map((c) => {
+        const summary = summaries.get(String(c.id));
+        return {
+          coacheeId: String(c.id),
+          name: asText(c.full_name),
+          ...coacheeLabels(c),
+          active: asText(c.stage) !== 'inactive',
+          observations: summary?.observations ?? 0,
+          lastDate: summary?.lastDate ?? '',
+          lastMotivation: summary?.lastMotivation ?? '',
+          lastEinstufung: summary?.lastEinstufung ?? '',
+          lastSrZiel: summary?.lastSrZiel ?? '',
+          lastSecondBesuch: summary?.lastSecondBesuch ?? '',
+          wantsPromotion: summary?.wantsPromotion ?? false,
+          wantsCandidate: summary?.wantsCandidate ?? false,
+          rcs: summary?.rcs ?? [],
+        };
+      })
+      .sort((a, b) => a.name.localeCompare(b.name, 'de-CH'));
+    res.json({ season, rows });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 
@@ -11218,7 +11381,18 @@ app.get('/api/rc-games', requireRcSession, async (req: Request, res: ExpressResp
 // and never anybody else's.
 app.get('/api/rc-game-notes', requireSurveyReader, async (_req: Request, res: ExpressResponse) => {
   try {
-    res.json(await listRcGameNotes());
+    // With the chair's read tick and the coachee's level and groups, newest
+    // game first — the same card as a note on an observation (19.11.2026).
+    const [notes, reads, coachees] = await Promise.all([
+      listRcGameNotes(), presidentReadRefs(), listCoacheesWithFallbackSort(),
+    ]);
+    const byId = new Map(coachees.map((c) => [String(c.id), c]));
+    const rows = notes.map((n) => ({
+      ...n,
+      ...coacheeLabels(byId.get(n.coacheeId) ?? { full_name: n.coacheeName }),
+      read: reads.has(readRef('sr', n.id)),
+    }));
+    res.json(rows.sort(byGameDateDesc));
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
@@ -11795,9 +11969,15 @@ app.get('/api/coachees/:id/games', requireRcSession, async (req: Request, res: E
   }
 });
 
-// A colleague's observation as the next coach may see it: that it happened,
-// when, in which role, by whom — and the goals it set. Not the assessment:
-// feedback_json stays with its author, and there is no file to open.
+// A colleague's observation as the next coach may see it. Until 19.11.2026
+// that was only that it happened and the goals it set. The chair then asked
+// for the whole form ("for a 2nd visit the last RC's information should be
+// visible, the full form", also from the season before), narrowed the same
+// day to the visits it is still about: colleagueSeesFull below, rules in
+// server/priorReports.ts. The rest stay goals only (redactedFeedback).
+
+/** The goals-only view: that it happened, when, in which role, by whom, and
+ *  the goals it set. Nothing to open, no file. */
 function redactedFeedback(rec: AnyRecord): AnyRecord {
   const results = ((rec.feedback_json as AnyRecord | undefined)?.results ?? {}) as AnyRecord;
   const expand = (rec.expand ?? {}) as Record<string, AnyRecord | undefined>;
@@ -11807,6 +11987,37 @@ function redactedFeedback(rec: AnyRecord): AnyRecord {
     expand: { game: expand.game },
     redacted: true,
     goals: asText(results.goals),
+  };
+}
+
+/** Whether the next coach reads this colleague's report in full, for the
+ *  coachee row they are observing (rules: server/priorReports.ts). */
+function colleagueSeesFull(rec: AnyRecord, coachee: AnyRecord, reportDate: string): boolean {
+  const results = ((rec.feedback_json as AnyRecord | undefined)?.results ?? {}) as AnyRecord;
+  return fullEarlierReport({
+    secondBesuch: results.secondBesuch,
+    reportSeason: reportDate ? seasonOfDate(reportDate) : null,
+    groups: asText(coachee.groups),
+    season: coacheeRowSeason(coachee.season) ?? seasonOfDate(new Date().toISOString()),
+  });
+}
+
+/** The full view. Still held back: the two signature images and the filed
+ *  PDF (it carries them), and the confidential note to the chair, which was
+ *  never in the report. The coach's side opens it read-only (`colleague:
+ *  true`): no reopen, no president note, no PDF. */
+function colleagueFeedback(rec: AnyRecord): AnyRecord {
+  const json = { ...((rec.feedback_json as AnyRecord | undefined) ?? {}) };
+  delete json.signature;
+  delete json.rcSignature;
+  const expand = (rec.expand ?? {}) as Record<string, AnyRecord | undefined>;
+  return {
+    id: rec.id, game: rec.game, coachee: rec.coachee,
+    rc_name: rec.rc_name, rc_id: rec.rc_id, role_assessed: rec.role_assessed, submitted_at: rec.submitted_at,
+    expand: { game: expand.game, coachee: expand.coachee },
+    feedback_json: json,
+    colleague: true,
+    goals: asText(((json.results ?? {}) as AnyRecord).goals),
   };
 }
 
@@ -11836,14 +12047,16 @@ app.get('/api/coachees/:id/feedbacks', requireRcSession, async (req: Request, re
     // About the person, not the row: coachees are one row per season, and
     // "what has been written about this referee" has no season.
     const rows = await feedbacksAboutCoachee(coachee);
-    // Scoped by coachee alone, this once handed any RC every colleague's full
-    // feedback_json — the written assessment, not just its existence. Then it
-    // handed them nothing, and the Feedback button on a colleague's coachee
-    // opened an empty list. Now: the coach's own reports in full, everyone
-    // else's reduced to the goals — the part agreed with the chair as worth
-    // passing on. The unfiltered view stays the admin's.
+    // The coach's own reports as filed. A colleague's in full where the rules
+    // allow it (a further visit asked for, or Neu-SR / Beförderung within this
+    // season and the last — server/priorReports.ts), minus the signatures and
+    // the PDF; otherwise the goals only. The unfiltered view stays the admin's.
     const me = await sessionRcIdentity(req);
-    res.json(me ? rows.map((fb) => (rcRefMatches(fb.rc_id, fb.rc_name, me) ? fb : redactedFeedback(fb))) : rows);
+    res.json(me ? rows.map((fb) => {
+      if (rcRefMatches(fb.rc_id, fb.rc_name, me)) return fb;
+      const game = ((fb.expand ?? {}) as Record<string, AnyRecord | undefined>).game;
+      return colleagueSeesFull(fb, coachee, asText(game?.match_date)) ? colleagueFeedback(fb) : redactedFeedback(fb);
+    }) : rows);
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
@@ -11879,7 +12092,7 @@ app.get('/api/games/:gameId/feedback', requireRcSession, async (req: Request, re
   }
 });
 
-// ── What the last coach wrote under "Ziele für nächste Spiele" ─────────
+// ── What the last coach wrote (goals, and since 19.11.2026 the whole form) ──
 // A second observation — this season or a later one — should start from what
 // the previous one asked the referee to work on. The written assessment stays
 // with its author (a plain RC reads only their own feedback_json, see
@@ -11908,7 +12121,40 @@ app.get('/api/coachees/:id/prior-goals', requireRcSession, async (req: Request, 
       if (!richTextToPlain(goals).trim()) return [];
       return [{ id: r.rec.id, date: r.date, role: r.role, rc: asText(r.rec.rc_name), goals }];
     });
-    res.json({ observed: mine.length, prior });
+    // Since 19.11.2026 the next coach reads the whole last report, not only its
+    // goals (the chair: "the full form", across seasons). `prior` stays as it
+    // was for the installed apps that read only it; `reports` is every earlier
+    // report, newest first, with what the form said: the ticks and the four
+    // written blocks. The criteria themselves open from the Feedback history.
+    // Full only where the rules allow it (server/priorReports.ts) or the
+    // report is the coach's own; otherwise the goals alone, and a report with
+    // neither is left out.
+    const me = await sessionRcIdentity(req);
+    const reports = mine.flatMap((r) => {
+      const results = ((r.rec.feedback_json as AnyRecord | undefined)?.results ?? {}) as AnyRecord;
+      const own = !me || rcRefMatches(r.rec.rc_id, r.rec.rc_name, me);
+      const full = own || colleagueSeesFull(r.rec, coachee, r.date);
+      const base = { id: r.rec.id, date: r.date, role: r.role, rc: asText(r.rec.rc_name) };
+      if (!full) {
+        const goals = asText(results.goals);
+        if (!richTextToPlain(goals).trim()) return [];
+        return [{
+          ...base, full: false,
+          motivation: '', einstufung: '', spielniveau: '', srZiel: '', secondBesuch: '', secondBesuchRole: '',
+          wantsPromotion: false, wantsCandidate: false, highlights: '', improvements: '', goals, bemerkungen: '',
+        }];
+      }
+      const ticks = noteResults(r.rec);
+      return [{
+        ...base, full: true,
+        motivation: ticks.motivation, einstufung: ticks.einstufung, spielniveau: ticks.spielniveau,
+        srZiel: ticks.srZiel, secondBesuch: ticks.secondBesuch, secondBesuchRole: ticks.secondBesuchRole,
+        wantsPromotion: ticks.wantsPromotion, wantsCandidate: ticks.wantsCandidate,
+        highlights: asText(results.highlights), improvements: asText(results.improvements),
+        goals: asText(results.goals), bemerkungen: asText(results.bemerkungen),
+      }];
+    });
+    res.json({ observed: mine.length, prior, reports });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
 });
 

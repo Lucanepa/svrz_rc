@@ -94,6 +94,7 @@ import { subscribeLive } from './lib/liveEvents';
 import { IS_NATIVE } from './lib/native';
 import { flushRcNotes, isNetworkFailure, queueRcNote, queuedRcNotes, type QueuedRcNote } from './lib/noteQueue';
 import { richToPlain, richToDisplayHtml, sanitizeRich, appendToRich } from './lib/richText';
+import { outcomeLabel, srGoalLabel } from './lib/statsLabels';
 import { importFresh } from './lib/freshImport';
 import StaleBuildNotice from './components/StaleBuildNotice';
 import { NotebookPen, BarChart3, Signature } from 'lucide-react';
@@ -254,6 +255,11 @@ const UI_STRINGS = {
     feedbackHistory: "Feedback-Verlauf",
     sentPdf: "Gesendetes PDF",
     historyGoalsOnly: "Beobachtung einer Kollegin / eines Kollegen — sichtbar sind nur die Ziele für nächste Spiele.",
+    historyColleague: (rc: string) => `Bericht von ${rc || 'einem anderen RC'} — nur lesen`,
+    priorWholeHint: "Was beim letzten Besuch festgehalten und mit dem/der SR besprochen wurde. Das ganze Formular mit allen Kriterien öffnest du über den Feedback-Verlauf.",
+    priorWants: "Will befördert werden",
+    priorGoalsOnlyNote: "Nur die Ziele: das ganze Formular gibt es bei «Weiterer Besuch: Ja» oder bei Neu-SR / Beförderung aus dieser oder der letzten Saison.",
+    priorCandidate: "Kandidat:in nächste Saison",
     historyNoGoals: "Keine Ziele notiert.",
     sentPdfFailed: "Das gesendete PDF konnte nicht geladen werden.",
     noFeedbacks: "Keine Feedbacks gefunden.",
@@ -438,6 +444,11 @@ const UI_STRINGS = {
     feedbackHistory: "Feedback History",
     sentPdf: "Sent PDF",
     historyGoalsOnly: "A colleague's observation — only the goals for next games are shown.",
+    historyColleague: (rc: string) => `Report by ${rc || 'another RC'} — read only`,
+    priorWholeHint: "What was recorded at the last visit and discussed with the referee. The whole form with every criterion opens from the Feedback history.",
+    priorWants: "Wants promotion",
+    priorGoalsOnlyNote: "Goals only: the whole form is shown after \"Further visit: yes\", or for new referees / promotion from this season or the last.",
+    priorCandidate: "Candidate next season",
     historyNoGoals: "No goals noted.",
     sentPdfFailed: "The sent PDF could not be loaded.",
     noFeedbacks: "No feedbacks found.",
@@ -3957,8 +3968,10 @@ export default function App() {
   };
 
   const openFeedbackRecord = (record: FeedbackRecord) => {
-    // A colleague's report has no form behind it here — the server handed over
-    // its goals and nothing else. It is read in the picker, not opened.
+    // A colleague's report from an older server has no form behind it — it
+    // handed over the goals and nothing else, read in the picker. Since
+    // 19.11.2026 the server sends the whole form (`colleague`), which opens
+    // read-only like any filed report that is not the coach's own.
     if (record.redacted) return;
     setOpenFeedbackId(record.id || null);
     // The server's rcRefMatches, verbatim (isMyRecord): the id when the record
@@ -7528,7 +7541,9 @@ export default function App() {
                   key: 'sent', icon: <ExternalLink size={18} />, label: t.sentPdf,
                   hint: formData.lang === 'DE' ? 'Genau die Datei, die der SR per Mail bekam' : 'Exactly the file the referee was mailed',
                   onClick: () => { if (openFeedbackId) void openSentPdf(openFeedbackId); },
-                  show: !!openFeedbackId && !isDemoMode(), disabled: sentPdfBusy === openFeedbackId, testId: 'sent-pdf',
+                  // The server hands the filed file to its author (and the chair's console)
+                  // only; a colleague's report, readable since 19.11.2026, offers none.
+                  show: !!openFeedbackId && openFeedbackMine && !isDemoMode(), disabled: sentPdfBusy === openFeedbackId, testId: 'sent-pdf',
                 },
                 {
                   key: 'draft', icon: <FileJson size={18} />, label: t.draftExport,
@@ -10439,9 +10454,12 @@ export default function App() {
           </div>
         </div>
 
-        {/* What the last coach asked this referee to work on. Only on a fresh
-            observation of somebody observed before, and only the goals: the
-            rest of a colleague's assessment stays theirs. Sits above the
+        {/* What the last coach recorded about this referee. Only on a fresh
+            observation of somebody observed before. Until 19.11.2026 only the
+            goals; the chair then asked for the whole last form, this season or
+            the one before, so the ticks and the four written blocks show here
+            and the criteria open from the Feedback history. An older server
+            sends no `reports`: the goals alone, as before. Sits above the
             criteria because it is read BEFORE the game, not after. */}
         {!openFeedbackId && priorGoals && priorGoals.observed > 0 && (
           <div className="mb-6 rounded-lg border border-sky-200 bg-sky-50/60 p-3 no-print" data-testid="prior-goals">
@@ -10449,7 +10467,47 @@ export default function App() {
               <Target size={16} className="text-sky-700 shrink-0 mt-0.5" />
               <div className="min-w-0 flex-1">
                 <div className="text-sm font-semibold text-stone-800">{t.priorGoalsTitle}</div>
-                {priorGoals.prior.length === 0 ? (
+                {priorGoals.reports && priorGoals.reports.length > 0 ? (
+                  <>
+                    <p className="text-[11px] text-stone-500 mt-0.5">{t.priorWholeHint}</p>
+                    {(priorGoalsOlderOpen ? priorGoals.reports : priorGoals.reports.slice(0, 1)).map((g) => (
+                      <div key={g.id} className="mt-2 pt-2 first:pt-0 border-t first:border-t-0 border-sky-200/70" data-testid="prior-report">
+                        <div className="text-[11px] font-medium text-stone-500 tabular-nums">
+                          {t.priorGoalsMeta(g.date ? dayLabel(g.date, { year: true }) : '', g.role, g.rc)}
+                        </div>
+                        {g.full === false && <div className="text-[11px] text-sky-800 mt-1" data-testid="prior-goals-only">{t.priorGoalsOnlyNote}</div>}
+                        <div className="flex flex-wrap gap-1.5 mt-1.5 empty:hidden">
+                          {g.spielniveau && <span className="inline-flex h-6 items-center px-2 rounded-full border border-stone-200 bg-white text-[11px] font-medium text-stone-700">{t.matchLevel}: {outcomeLabel('spielniveau', g.spielniveau, formData.lang)}</span>}
+                          {g.motivation && <span className="inline-flex h-6 items-center px-2 rounded-full border border-stone-200 bg-white text-[11px] font-medium text-stone-700">{t.motivation}: {outcomeLabel('motivation', g.motivation, formData.lang)}</span>}
+                          {g.einstufung && <span className="inline-flex h-6 items-center px-2 rounded-full border border-stone-200 bg-white text-[11px] font-medium text-stone-700">{t.rating}: {outcomeLabel('einstufung', g.einstufung, formData.lang)}</span>}
+                          {g.srZiel && <span className="inline-flex h-6 items-center px-2 rounded-full border border-stone-200 bg-white text-[11px] font-medium text-stone-700">{t.refGoal}: {srGoalLabel(g.srZiel, formData.lang)}</span>}
+                          {g.secondBesuch && <span className="inline-flex h-6 items-center px-2 rounded-full border border-stone-200 bg-white text-[11px] font-medium text-stone-700">{t.secondVisit}: {outcomeLabel('secondBesuch', g.secondBesuch, formData.lang)}{g.secondBesuchRole ? ` (${g.secondBesuchRole})` : ''}</span>}
+                          {g.wantsPromotion && <span className="inline-flex h-6 items-center px-2 rounded-full border border-stone-200 bg-white text-[11px] font-medium text-stone-700">{t.priorWants}</span>}
+                          {g.wantsCandidate && <span className="inline-flex h-6 items-center px-2 rounded-full border border-stone-200 bg-white text-[11px] font-medium text-stone-700">{t.priorCandidate}</span>}
+                        </div>
+                        {([['highlights', t.highlights], ['improvements', t.improvements], ['goals', t.goalsNext], ['bemerkungen', t.remarks]] as const).map(([k, label]) => (
+                          richToPlain(g[k] || '').trim() ? (
+                            <div key={k} className="mt-2">
+                              <div className="text-[11px] uppercase tracking-wider text-sky-800 font-semibold">{label}</div>
+                              <RichView value={g[k]} className="text-sm text-stone-800 mt-0.5" />
+                            </div>
+                          ) : null
+                        ))}
+                      </div>
+                    ))}
+                    {priorGoals.reports.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={() => setPriorGoalsOlderOpen((v) => !v)}
+                        className="mt-2 inline-flex items-center gap-1 text-xs font-medium text-sky-800 hover:underline"
+                        data-testid="prior-goals-older"
+                      >
+                        <ChevronDown size={14} className={cn('transition-transform', priorGoalsOlderOpen && 'rotate-180')} />
+                        {t.priorGoalsOlder(priorGoals.reports.length - 1)}
+                      </button>
+                    )}
+                  </>
+                ) : priorGoals.prior.length === 0 ? (
                   <p className="text-xs text-stone-600 mt-0.5">{t.priorGoalsNone(priorGoals.observed)}</p>
                 ) : (
                   <>
@@ -11885,10 +11943,11 @@ export default function App() {
                         : <div className="text-sm text-stone-500 mt-0.5">{t.historyNoGoals}</div>}
                     </div>
                   ) : (
-                    <div key={record.id} className="flex items-stretch hover:bg-stone-50 transition-colors">
+                    <div key={record.id} className={cn('flex items-stretch hover:bg-stone-50 transition-colors', record.colleague && 'bg-sky-50/40')}>
                       <button
                         onClick={() => openFeedbackRecord(record)}
                         className="flex-1 min-w-0 text-left px-4 py-3"
+                        data-testid={record.colleague ? 'history-colleague' : undefined}
                       >
                         <div className="text-sm font-semibold text-stone-900">
                           {recordGameLabel(record) || '-'}
@@ -11896,9 +11955,14 @@ export default function App() {
                         <div className="text-xs text-stone-500 mt-1">
                           {record.submitted_at || '-'} | {t.rcShort}: {record.rc_name || '-'} | {record.role_assessed || '-'}
                         </div>
+                        {/* A colleague's report, whole since 19.11.2026 (the chair:
+                            "the full form"): it opens read-only, with no reopen,
+                            no PDF and no note to the chair. */}
+                        {record.colleague && <div className="text-[11px] text-sky-800 mt-1.5">{t.historyColleague(record.rc_name || '')}</div>}
                       </button>
-                      {/* The filed document itself, without opening the record. */}
-                      {!isDemoMode() && (
+                      {/* The filed document itself, without opening the record —
+                          the coach's own only: the server refuses a colleague's. */}
+                      {!isDemoMode() && !record.colleague && (
                         <button
                           onClick={() => void openSentPdf(record.id)}
                           disabled={sentPdfBusy === record.id}

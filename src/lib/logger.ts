@@ -522,7 +522,7 @@ export const UNAUTHORIZED_EVENT = 'svrz:unauthorized';
  *  link token (signature, survey, calendar feed). Exported for the test. */
 export function isRcSessionRefusal(status: number, url: string): boolean {
   return status === 401 && /\/api\//.test(url)
-    && !/\/api\/((auth|admin|coachee-file|president-notes|forms|feedback-archive|finance|referee-coaches|vm|survey-responses)(\/|\?|$)|survey\/|signature\/(?!start(\?|$))|ical\/(?!me(\?|$)))/.test(url);
+    && !/\/api\/((auth|admin|coachee-file|president-(?:notes|marks|reads|overview)|forms|feedback-archive|finance|referee-coaches|vm|survey-responses)(\/|\?|$)|survey\/|signature\/(?!start(\?|$))|ical\/(?!me(\?|$)))/.test(url);
 }
 
 // ── Is it us, or the device's network? ────────────────────────────────

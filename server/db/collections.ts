@@ -365,6 +365,33 @@ export const COLLECTIONS: Record<string, CollectionMeta> = {
       {name: 'updated', type: 'autodate'},
     ],
   },
+  president_note_reads: {
+    name: 'president_note_reads',
+    // Born on Postgres (19.11.2026).
+    id: 'pg_president_note_reads',
+    delegate: 'presidentNoteRead',
+    fields: [
+      {name: 'id', type: 'text'},
+      {name: 'ref', type: 'text'},
+      {name: 'created', type: 'autodate'},
+      {name: 'updated', type: 'autodate'},
+    ],
+  },
+  president_referee_marks: {
+    name: 'president_referee_marks',
+    // Born on Postgres (19.11.2026).
+    id: 'pg_president_referee_marks',
+    delegate: 'presidentRefereeMark',
+    fields: [
+      {name: 'id', type: 'text'},
+      {name: 'referee_key', type: 'text'},
+      {name: 'referee_name', type: 'text'},
+      {name: 'tags', type: 'json'},
+      {name: 'memo', type: 'text'},
+      {name: 'created', type: 'autodate'},
+      {name: 'updated', type: 'autodate'},
+    ],
+  },
   rc_saved_signatures: {
     name: 'rc_saved_signatures',
     // Born on Postgres (23.10.2026).

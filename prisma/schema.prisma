@@ -448,3 +448,40 @@ model RcPasskey {
   @@index([rc_id])
   @@map("rc_passkeys")
 }
+
+/// The chair's "read" tick on an RC note (19.11.2026). One row per note she
+/// ticked; no row = unread. `ref` names the list and the id: "fb:<feedback
+/// id>" for a note on an observation, "gn:<rc_game_notes id>" for a 4.4.10
+/// Rückmeldung. Its own table, read and written only behind the chair's
+/// password, so no endpoint an RC can reach carries it along.
+model PresidentNoteRead {
+  id String @id @db.VarChar(15)
+  ref String @default("")
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@unique([ref])
+  @@map("president_note_reads")
+}
+
+/// The chair's whiteboard per referee (19.11.2026): her own tags ("N3-Kurs
+/// nächste Saison") and a short memo, kept across seasons. `referee_key` is
+/// "sv:<SV number>", or "name:<folded name>" for a coachee row not linked to
+/// the register (server/presidentBoard.ts, refereeKeyOf). Chair-only, like
+/// president_note_reads.
+model PresidentRefereeMark {
+  id String @id @db.VarChar(15)
+  referee_key String @default("")
+  referee_name String @default("")
+  tags Json? @db.Json
+  memo String @default("")
+  created DateTime? @default(now()) @db.Timestamptz(3)
+  updated DateTime? @default(now()) @updatedAt @db.Timestamptz(3)
+  /// PocketBase listed rows in SQLite rowid order when no sort was given and
+  /// broke sort ties the same way; this keeps that order (never returned).
+  seq Int @default(autoincrement()) @map("_seq")
+  @@unique([referee_key])
+  @@map("president_referee_marks")
+}

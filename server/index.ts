@@ -3910,7 +3910,8 @@ async function recordGamesSyncStatus(status: GamesSyncStatus): Promise<void> {
 // The VM-facing half is server/boerse.ts. This is the half that writes.
 const BOERSE_SYNC_STATUS_KEY = 'boerse_sync_status';
 const BOERSE_ENABLED = process.env.VM_BOERSE_ENABLED !== '0';
-const BOERSE_POLL_MINUTES = Number(process.env.VM_BOERSE_POLL_MINUTES || 60);
+// Every 2 h, not hourly: fewer visits to VolleyManager (it blocked this server 25.11.2026).
+const BOERSE_POLL_MINUTES = Number(process.env.VM_BOERSE_POLL_MINUTES || 120);
 
 type BoerseSyncStatus = {
   // TWO timestamps, and the distinction is the whole point. `lastAttemptAt`

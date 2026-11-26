@@ -740,7 +740,7 @@ test('a late answer from an earlier open does not take over the dialog that is o
   expect(new Set(polled)).toEqual(new Set(['fresh']));
 });
 
-test('a phone signature that answers after the dialog closed stays off the form, and no toast claims it', async ({ page }) => {
+test('a phone signature answering while the coach is off the form stays off it until the form is back', async ({ page }) => {
   const PHONE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
   let release: () => void = () => {};
   const gate = new Promise<void>((resolve) => { release = resolve; });
@@ -765,7 +765,32 @@ test('a phone signature that answers after the dialog closed stays off the form,
   expect(await page.getByTestId('toast').filter({ hasText: /Signature taken from the phone|Unterschrift vom Handy übernommen/ }).count()).toBe(0);
   await page.evaluate(() => history.forward());
   await expect(page.getByRole('heading', { name: /Tips & Tricks|Tipps & Tricks/ })).toBeVisible();
-  await expect(rcSig(page)).toHaveCount(0);
+  // Back on the form it was made for, the link is asked again and lands there.
+  await expect(rcSig(page)).toHaveAttribute('src', PHONE, { timeout: 8000 });
+});
+
+test('a link signed after the dialog closed lands on its form, and Sign again keeps that link', async ({ page }) => {
+  const PHONE = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
+  let starts = 0;
+  let signed = false;
+  await page.route('**/api/signature/start', (r) => { starts += 1; return r.fulfill({ json: { slug: 'sig-test' } }); });
+  await page.route('**/api/signature/sig-test', (route) => route.fulfill({
+    json: { context: '', signer: '', signed, data: signed ? PHONE : '' },
+  }));
+  await page.goto('/');
+  await openFeedbackForm(page);
+  await openSign(page, 'referee');
+  await signatureDialog(page).getByRole('button', { name: /^(Close|Schliessen)$/ }).click();
+  await expect(signatureDialog(page)).toHaveCount(0);
+  // The link the referee already holds is still the one: no second session.
+  await openSign(page, 'referee');
+  await expect(signatureDialog(page).getByText(/Waiting for signature|Warte auf Unterschrift/)).toBeVisible();
+  await signatureDialog(page).getByRole('button', { name: /^(Close|Schliessen)$/ }).click();
+  expect(starts).toBe(1);
+  // Signed that evening (24.11.2026: WhatsApp), with the dialog long closed.
+  signed = true;
+  await expect(refereeSig(page)).toHaveAttribute('src', PHONE, { timeout: 15000 });
+  await expect(page.getByText(/^(Signature taken from the phone\.|Unterschrift vom Handy übernommen\.)$/)).toBeVisible();
 });
 
 test('a signature made on the phone closes the dialog, says so, and drops the half-drawn one here', async ({ page }) => {

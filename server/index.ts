@@ -7571,8 +7571,10 @@ async function getSignatureRecord(slug: string) {
     return await db.collection('signatures').getFirstListItem(`slug = "${escapeFilterValue(slug)}"`);
   } catch { return null; }
 }
-// A SIGNED session is read only while the coach's signature dialog polls it —
-// seconds to minutes — and the image then lives in the form. It used to stay
+// A SIGNED session is read by the coach's form until it picks the image up —
+// seconds in the hall, hours for a link sent by message (the form keeps
+// watching its link, src/App.tsx sigPending) — and the image then lives in
+// the form. It used to stay
 // readable forever: a slug found later in a chat history (the link goes out
 // through the share sheet) handed out the handwritten signature for good. A
 // week covers a coach whose phone was offline when the referee signed.

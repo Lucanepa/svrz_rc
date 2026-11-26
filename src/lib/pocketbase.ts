@@ -1999,7 +1999,9 @@ export async function startSignature(context: string, signer?: string): Promise<
 export async function getSignatureSession(slug: string): Promise<{ context: string; signer: string; signed: boolean; data: string }> {
   if (isDemoMode()) return demo.getSignatureSession();
   const res = await fetch(apiUrl(`/api/signature/${encodeURIComponent(slug)}`));
-  if (!res.ok) throw new Error('Signature not found');
+  // The status rides along: 404/410 mean the link is gone for good, anything
+  // else (a 5xx, the gym's Wi-Fi) is worth asking again.
+  if (!res.ok) throw Object.assign(new Error('Signature not found'), { status: res.status });
   return res.json();
 }
 export async function submitSignatureSession(slug: string, data: string, signer?: string): Promise<void> {

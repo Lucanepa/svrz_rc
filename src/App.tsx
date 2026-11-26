@@ -373,7 +373,7 @@ const UI_STRINGS = {
     sigShareLink: "Link senden",
     sigCopyLink: "Link kopieren",
     sigLinkCopied: "Link kopiert.",
-    sigLinkHint: "Der Link öffnet sich auf dem Handy des Schiedsrichters. Dieses Fenster offen lassen, bis die Unterschrift da ist.",
+    sigLinkHint: "Der Link öffnet sich auf dem Handy des Schiedsrichters. Unterschreibt er später, erscheint die Unterschrift, sobald dieses Formular auf diesem Gerät offen ist.",
     parkFailed: "Die Server-Sicherung hat nicht geklappt — der Entwurf ist auf diesem Gerät gespeichert.",
     offlineChecking: "Offline-Check…",
     offlineReady: "Offline bereit",
@@ -561,7 +561,7 @@ const UI_STRINGS = {
     sigShareLink: "Send link",
     sigCopyLink: "Copy link",
     sigLinkCopied: "Link copied.",
-    sigLinkHint: "The link opens on the referee's phone. Keep this dialog open until the signature arrives.",
+    sigLinkHint: "The link opens on the referee's phone. If they sign later, the signature appears once this form is open on this device.",
     parkFailed: "The server backup did not go through — the draft is saved on this device.",
     offlineChecking: "Offline check…",
     offlineReady: "Offline ready",
@@ -2142,6 +2142,27 @@ export default function App() {
    *  answer from the phone, that arrives after its dialog closed or another
    *  one opened is ignored. */
   const sigOpenSeqRef = useRef(0);
+  /** The phone link handed out per signature slot (sigDraftKey), kept on this
+   *  device until it brings a signature back, the coach signs here, or the
+   *  report is filed. A referee signs from a link sent by WhatsApp hours after
+   *  the dialog closed (24.11.2026): watched only while the dialog was open, and
+   *  replaced by a fresh link on every open, that signature reached the server
+   *  and never the form. Older than a signed session lives there (7 days) →
+   *  dropped on the next write. Storage blocked: this page's memory only. */
+  const [sigPending, setSigPendingMap] = useState<Record<string, { slug: string; at: number }>>(() => {
+    try {
+      const v = JSON.parse(localStorage.getItem('svrz_sig_pending') || '{}');
+      return v && typeof v === 'object' && !Array.isArray(v) ? v : {};
+    } catch { return {}; }
+  });
+  const setSigPending = (key: string, slug: string | null) => setSigPendingMap((prev) => {
+    const now = Date.now();
+    const next: Record<string, { slug: string; at: number }> = {};
+    for (const [k, v] of Object.entries(prev) as [string, { slug: string; at: number }][]) if (k !== key && now - Number(v?.at) < 7 * 24 * 60 * 60 * 1000) next[k] = v;
+    if (slug) next[key] = { slug, at: now };
+    try { localStorage.setItem('svrz_sig_pending', JSON.stringify(next)); } catch { /* see above */ }
+    return next;
+  });
   /** Bumped by updateSignature; see the comment there for why a token and not a
    *  direct call. Batched with the form update, so the effect that watches it
    *  runs on the commit that contains the signature. */
@@ -2177,9 +2198,9 @@ export default function App() {
   /**
    * Hand the signing link to the referee instead of holding a QR code up at
    * them — the faster route when both are packing up. It goes to the referee's
-   * own phone, in the hall, while this dialog stays open waiting for it: the
-   * session is only watched while the dialog is, so the signature still belongs
-   * to the visit it was collected at.
+   * own phone, and often by message after the hall: the link stays this form's
+   * (sigPending) until it brings a signature back, so a referee who signs that
+   * evening still lands on the right form.
    */
   const shareSignatureLink = async (slug: string) => {
     const url = signUrlFor(slug);
@@ -2214,12 +2235,19 @@ export default function App() {
     // waiting for a request that cannot answer. The pad works either way.
     if (isOffline && !isDemoMode()) { setSigRelayFailed(true); return; }
     try {
+      // The link from an earlier open may already be on the referee's phone:
+      // it stays the live one for as long as the server still has it.
+      const pending = sigPending[key]?.slug;
+      if (pending && await getSignatureSession(pending).then(() => true, () => false)) {
+        if (seq === sigOpenSeqRef.current) setSigSlug(pending);
+        return;
+      }
       const who = target === 'rc'
         ? `${formData.lang === 'DE' ? 'Referee Coach' : 'Referee Coach'} ${sigSignerName('rc')}`.trim()
         : `${formData.role} ${formData.meta.srName}`.trim();
       const context = [formData.meta.mannschaften, formData.meta.liga, who].filter(Boolean).join(' · ');
       const started = await startSignature(context, sigSignerName(target));
-      if (seq === sigOpenSeqRef.current) setSigSlug(started.slug);
+      if (seq === sigOpenSeqRef.current) { setSigSlug(started.slug); if (!isDemoMode()) setSigPending(key, started.slug); }
     } catch { if (seq === sigOpenSeqRef.current) setSigRelayFailed(true); }
   };
   const saveSignatureHere = (data: string, stats: SignatureSaveStats) => {
@@ -2248,35 +2276,14 @@ export default function App() {
     // coordinate, never the image.
     clientLog.info('sig.saved', 'signature saved on this device', { target: target.target, ...stats });
     if (sigSlug) void submitSignatureSession(sigSlug, data, sigSignerName(target.target)).catch(() => { /* see above */ });
+    // Signed here: a phone signing the old link later must not replace this one.
+    setSigPending(target.key, null);
   };
   /** Closing with nothing worth keeping, or after an explicit "Verwerfen". */
   const discardSignature = () => {
     if (sigFor) sigDraftsRef.current.delete(sigFor.key);
     closeSignatureDialog();
   };
-  useEffect(() => {
-    if (!sigModalOpen || !sigSlug || !sigFor) return;
-    // The open this poll belongs to. A request already on its way when the
-    // dialog closes (a Back, a game switch, a save here) still answers, and
-    // clearInterval cannot stop that: its signature would land on whatever
-    // form is open by then (24.10.2026, the same shape as on main).
-    const seq = sigOpenSeqRef.current;
-    const id = setInterval(async () => {
-      try {
-        const sess = await getSignatureSession(sigSlug);
-        if (seq !== sigOpenSeqRef.current) return;
-        // The phone that scanned the QR is signing for whichever party the modal
-        // was opened for, so the relayed image lands in that slot.
-        if (sess.signed && sess.data) {
-          sigDraftsRef.current.delete(sigFor.key);
-          updateSignature(sess.data, sigFor.target);
-          closeSignatureDialog();
-          toast.success(formData.lang === 'DE' ? 'Unterschrift vom Handy übernommen.' : 'Signature taken from the phone.', { lang: formData.lang });
-        }
-      } catch { /* ignore */ }
-    }, 3000);
-    return () => clearInterval(id);
-  }, [sigModalOpen, sigSlug, sigFor]);
   const [downloadingEmptyForm, setDownloadingEmptyForm] = useState(false);
   const [manualUploadCoachee, setManualUploadCoachee] = useState<Coachee | null>(null);
   const [manualUploadSubmitting, setManualUploadSubmitting] = useState(false);
@@ -4639,6 +4646,9 @@ export default function App() {
       // THIS role only: the other referee of a two-referee visit is still
       // unsent, and a tombstone on it would tell every device to drop it.
       void unparkDrafts(selectedGame.id, fd.role).catch(() => {});
+      // Filed: a phone link still out has no form left to sign.
+      setSigPending(sigDraftKey(selectedGame.id, fd.role, 'referee'), null);
+      setSigPending(sigDraftKey(selectedGame.id, fd.role, 'rc'), null);
       // The new record's id travels back so the sender can add a private note to
       // the RC president straight away, without reopening the game to find it.
       // Not in dual mode: two records are filed in one go and only one form is
@@ -5101,6 +5111,52 @@ export default function App() {
    *  wrapper that goes inert with it; it is locked by the same three facts,
    *  plus a filed record being on screen. */
   const tipsLocked = formDisabled || (!!openFeedbackId && !reopenedId);
+  /** The phone links (sigPending) of the form on screen, as `key=slug`, while it
+   *  can still take ink. A form left, switched or locked stops the watch below,
+   *  and its links wait for the form to be open again. */
+  const sigWatch = feedbackSubView === 'feedbackForm' && selectedGameId && !tipsLocked
+    ? [sigDraftKey(selectedGameId, formData.role, 'referee'), sigDraftKey(selectedGameId, formData.role, 'rc')]
+      .filter((k) => sigPending[k]).map((k) => `${k}=${sigPending[k].slug}`).join(' ')
+    : '';
+  const sigDialogKey = sigModalOpen && sigFor ? sigFor.key : '';
+  useEffect(() => {
+    if (!sigWatch) return;
+    // Cleared on every leave: an answer still on its way when the coach switched
+    // form must not land on whatever form is open by then (24.10.2026).
+    let live = true;
+    // One round at a time: on slow Wi-Fi a tick could overlap the last one and
+    // take the same signature twice, with two toasts.
+    let busy = false;
+    const check = async () => {
+      if (busy) return;
+      busy = true;
+      try { await checkOnce(); } finally { busy = false; }
+    };
+    const checkOnce = async () => {
+      for (const pair of sigWatch.split(' ')) {
+        const [key, slug] = pair.split('=');
+        let sess: Awaited<ReturnType<typeof getSignatureSession>>;
+        try { sess = await getSignatureSession(slug); }
+        catch (err) {
+          const status = (err as { status?: number }).status;
+          if (live && (status === 404 || status === 410)) setSigPending(key, null);
+          continue;
+        }
+        if (!live) return;
+        if (!sess.signed || !sess.data) continue;
+        setSigPending(key, null);
+        sigDraftsRef.current.delete(key);
+        updateSignature(sess.data, key.endsWith('|rc') ? 'rc' : 'referee');
+        if (sigDialogKey === key) closeSignatureDialog();
+        toast.success(formData.lang === 'DE' ? 'Unterschrift vom Handy übernommen.' : 'Signature taken from the phone.', { lang: formData.lang });
+      }
+    };
+    void check();
+    // Quick while its dialog shows the QR in the hall; slower for a link sent
+    // by message, which the referee may sign any time that day.
+    const id = setInterval(() => void check(), sigDialogKey ? 3000 : 10000);
+    return () => { live = false; clearInterval(id); };
+  }, [sigWatch, sigDialogKey]);
 
   // A role whose report is filed opens THAT report. Reached from the game, so
   // it works for a report that belongs to no coachee list — one on a referee

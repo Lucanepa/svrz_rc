@@ -268,6 +268,15 @@ async function switchRole(base: string, jar: CookieJar, csrf: string, attributeV
 }
 
 /**
+ * One VolleyManager session kept between polls. A fresh login on every hourly
+ * poll, each with two role switches, from one address is the likeliest reason
+ * VolleyManager blocked this server on 25.11.2026. Kept only after a poll that
+ * succeeded, and for at most SESSION_MAX_MS after its login.
+ */
+const SESSION_MAX_MS = 6 * 60 * 60 * 1000;
+let keptSession: { key: string; jar: CookieJar; at: number } | null = null;
+
+/**
  * Read the whole börse.
  *
  * Deliberately UNFILTERED. Filtering to `status=open` — which is what the börse
@@ -288,24 +297,36 @@ export async function fetchBoerseOffers(opts: {
 }): Promise<FetchResult> {
   const { base, username, password } = opts;
   const say = opts.log ?? (() => {});
-  const jar = new CookieJar();
-  jar.set('language', 'de');
+  // Taken, not shared: a poll that fails leaves nothing behind, so the next one
+  // logs in afresh instead of retrying a session in an unknown state.
+  const reuse = keptSession && keptSession.key === `${base}|${username}` && Date.now() - keptSession.at < SESSION_MAX_MS
+    ? keptSession : null;
+  keptSession = null;
+  const jar = reuse?.jar ?? new CookieJar();
+  let loggedInAt = reuse?.at ?? 0;
   let restoreTo = '';
 
   try {
-    const { body: loginHtml } = await followRedirects(base, `${base}/login`, jar);
-    const hidden: Record<string, string> = {};
-    for (const m of loginHtml.matchAll(/name="([^"]+)"[^>]*value="([^"]*?)"/g)) hidden[m[1]] = m[2];
-    const prefix = '__authentication[Neos][Flow][Security][Authentication][Token][UsernamePassword]';
-    hidden[`${prefix}[username]`] = username;
-    hidden[`${prefix}[password]`] = password;
-    await followRedirects(base, `${base}/sportmanager.security/authentication/authenticate`, jar, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(hidden).toString(),
-    });
-
-    const before = await readActiveRole(base, jar);
+    let before = reuse ? await readActiveRole(base, jar) : null;
+    // No token on the dashboard: VolleyManager ended the kept session. Log in.
+    if (!before?.csrf) {
+      jar.set('language', 'de');
+      const { body: loginHtml } = await followRedirects(base, `${base}/login`, jar);
+      const hidden: Record<string, string> = {};
+      for (const m of loginHtml.matchAll(/name="([^"]+)"[^>]*value="([^"]*?)"/g)) hidden[m[1]] = m[2];
+      const prefix = '__authentication[Neos][Flow][Security][Authentication][Token][UsernamePassword]';
+      hidden[`${prefix}[username]`] = username;
+      hidden[`${prefix}[password]`] = password;
+      await followRedirects(base, `${base}/sportmanager.security/authentication/authenticate`, jar, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: new URLSearchParams(hidden).toString(),
+      });
+      loggedInAt = Date.now();
+      before = await readActiveRole(base, jar);
+    } else {
+      say('[boerse] reusing the VolleyManager session from an earlier poll');
+    }
     restoreTo = before.attr;
     let switched: boolean | undefined;
     if (before.attr !== VM_ROLE_FOR_BOERSE) {
@@ -400,6 +421,7 @@ export async function fetchBoerseOffers(opts: {
       return failed(`incomplete: stopped at ${offset} of ${total} without reaching the cutoff`);
     }
 
+    keptSession = { key: `${base}|${username}`, jar, at: loggedInAt };
     return { ok: true, offers, total, ignored, error: '', cutoff };
   } catch (error) {
     return failed(error instanceof Error ? error.message : String(error));

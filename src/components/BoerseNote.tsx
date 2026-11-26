@@ -115,10 +115,10 @@ export function SyncFreshness({ games, boerse, lang }: { games?: string; boerse?
   const g = age(games, lang);
   const b = age(boerse, lang);
   // Each has its own patience. The games sync runs nightly, so a day is normal
-  // and two is not; the börse runs hourly, so three hours already means several
-  // missed runs.
+  // and two is not; the börse runs every 2 h, so 4½ h means a run was missed
+  // beyond the one skipped in wiedisync's quiet hour.
   const gStale = !g || g.mins > 36 * 60;
-  const bStale = !b || b.mins > 180;
+  const bStale = !b || b.mins > 270;
   const part = (label: string, a: { text: string } | null, stale: boolean) => (
     <span className={cn('inline-flex items-center gap-1', stale ? 'font-semibold text-amber-700' : 'text-stone-400')}>
       <span aria-hidden className={cn('h-1.5 w-1.5 rounded-full', stale ? 'bg-amber-500' : 'bg-green-600')} />

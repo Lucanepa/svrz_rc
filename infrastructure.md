@@ -1176,7 +1176,8 @@ separate host, the same way that page does (`server/svrzGameCenter.ts`):
   27.11.2026 over 773 stored games: 0 differences in league, teams, referees and
   SV numbers; the rest were real reschedules, a double space in old addresses,
   and results now carrying set scores.
-- **Not published there, so gone:** line judges, VolleyManager's RD/RSV
+- **Line judges:** SVRZ games have none (only NLA does, outside the scope), so
+  the column stays empty, as it always was. **Gone:** VolleyManager's RD/RSV
   observation marks (a game now comes in only when a coachee is on it, and the
   sync clears old marks on the games it reads), referee contacts. Contacts come
   from the SV register: "Kontaktdaten aus dem SV-Register" in the console copies

@@ -19,8 +19,9 @@
 // page's own scripts, tries each server reference in them, and keeps the one
 // that returns games.
 //
-// Not published by the Game Center, so the rows it makes leave them empty:
-// line judges, and VolleyManager's RD/RSV observation marks.
+// Left empty in the rows it makes: line judges (SVRZ games have none; only NLA
+// does, outside this sync's scope) and VolleyManager's RD/RSV observation marks
+// (not published anywhere in the Game Center).
 
 export type GameCenterGame = {
   gameId: number | string;

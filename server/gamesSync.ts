@@ -386,8 +386,9 @@ export function storedMatchDate(utc: unknown): string {
  *  for field, so upsertGame, the coachee matching, the held-game mails and
  *  every list read it exactly as before: league "3L ♂ A" / "HU23 1. Liga",
  *  result "1:3 (19:25 / 23:25 / 25:18 / 13:25)", maps link from the plus code.
- *  Line judges and the observation marks are not published, so they are empty
- *  — a game now comes in only on the strength of a coachee on it. */
+ *  Line judges stay empty (SVRZ games have none; only NLA does) and so do the
+ *  observation marks (not published) — a game now comes in only on the
+ *  strength of a coachee on it. */
 export function transformGameCenterGame(g: GameCenterGame): Record<string, unknown> {
   const id = text(g.gameId);
   const genderSymbol = g.gender === 'm' ? '♂' : g.gender === 'f' ? '♀' : '';

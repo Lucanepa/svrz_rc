@@ -2681,6 +2681,11 @@ let boerseIndexCache: { at: number; byMatch: Map<string, BoerseSlotOffer[]>; asO
 const BOERSE_INDEX_TTL_MS = 60_000;
 
 async function getBoerseIndex(): Promise<{ byMatch: Map<string, BoerseSlotOffer[]>; asOf: string }> {
+  // No poll, no verdict. With the poll off (VolleyManager blocks this server
+  // since 25.11.2026 and nothing else publishes the Börse) the stored offers
+  // only age: an offer still "open" from before the block would mark its game
+  // red for ever. The rows stay in the table; nothing reads them meanwhile.
+  if (!BOERSE_ENABLED) return { byMatch: new Map(), asOf: '' };
   if (boerseIndexCache && Date.now() - boerseIndexCache.at < BOERSE_INDEX_TTL_MS) return boerseIndexCache;
   const rows = await withCollection(collectionCandidates.boerseOffers, (c) =>
     c.getFullList<AnyRecord>({

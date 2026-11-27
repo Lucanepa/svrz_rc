@@ -1417,10 +1417,14 @@ const VM_SYNC_CRON = process.env.VM_SYNC_CRON || '0 1 * * *';
  *
  * Off for a few days after VolleyManager blocked this server (25.11.2026); back
  * on now that the games come from the SVRZ Game Center, where a run is ~10 light
- * requests — and with the SR-Börse gone, these are what bring a same-day crew
- * change in. Set to an empty string for nightly only.
+ * requests and ~6 s — and with the SR-Börse gone, these are what bring a
+ * same-day crew change in.
+ *
+ * Every hour since 27.11.2026 (the owner's call), with two hours left out:
+ * 01 is the nightly sync at 01:00, and 03 is inside this host's backup window
+ * (02:45–03:39, see VM_SYNC_CRON above). Set to an empty string for nightly only.
  */
-const VM_SYNC_REFRESH_HOURS = String(process.env.VM_SYNC_REFRESH_HOURS ?? '12,16');
+const VM_SYNC_REFRESH_HOURS = String(process.env.VM_SYNC_REFRESH_HOURS ?? '0,2,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23');
 const VM_SYNC_MAX_RETRIES = Number(process.env.VM_SYNC_MAX_RETRIES || 10);
 const VM_SYNC_RETRY_DELAY_MS = Number(process.env.VM_SYNC_RETRY_DELAY_MS || 15000);
 // Note: this list only drives the columns VM renders — the search response
@@ -3909,13 +3913,13 @@ async function runBoerseSyncSafely(reason: string): Promise<BoerseSyncStatus> {
 // for a different reason than the one being retried. Eleven attempts at a
 // 45-second request deadline plus 15-second waits stay inside the takeover
 // window, so a wedged run still cannot hold the account for good.
-async function runGamesSyncWithRetry(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
-  return withVmLock('games-sync', () => runGamesSyncRetryLoop(windowInput));
+async function runGamesSyncWithRetry(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}, maxRetries = VM_SYNC_MAX_RETRIES) {
+  return withVmLock('games-sync', () => runGamesSyncRetryLoop(windowInput, maxRetries));
 }
 
-async function runGamesSyncRetryLoop(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
+async function runGamesSyncRetryLoop(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}, maxRetries = VM_SYNC_MAX_RETRIES) {
   let lastError: unknown = null;
-  const totalAttempts = VM_SYNC_MAX_RETRIES + 1;
+  const totalAttempts = maxRetries + 1;
 
   for (let attempt = 1; attempt <= totalAttempts; attempt += 1) {
     try {
@@ -5142,8 +5146,8 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
     let niveau_table: Record<string, unknown> = {};
     try { niveau_table = sanitizeNiveauTable(niveauRec ? JSON.parse(asText(niveauRec.value)) : {}); } catch { niveau_table = {}; }
     const default_season = await resolveDefaultSeason();
-    // Both upstream clocks, for the freshness line a coach reads. LAST SUCCESS
-    // on each, never the last attempt — see GamesSyncStatus. Here rather than on
+    // The games clock, for the freshness line a coach reads. LAST SUCCESS,
+    // never the last attempt — see GamesSyncStatus. Here rather than on
     // every game row: it is one fact about the whole screen, and this endpoint
     // is already fetched once on load.
     const gamesStatus = await (async () => {
@@ -5152,14 +5156,12 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
         return rec ? JSON.parse(asText(rec.value)) as GamesSyncStatus : null;
       } catch { return null; }
     })();
-    const boerseStatus = await readBoerseStatus();
     res.json({
       default_season, test_mode: await isEmailTestMode(), groups, coachee_targets,
       rc_mandates, default_goal, paid_cap, niveau_table,
       expense_rates: await readExpenseRates(),
       freshness: {
         games: asText(gamesStatus?.lastSuccessAt) || (gamesStatus?.ok ? asText(gamesStatus.at) : ''),
-        boerse: asText(boerseStatus?.lastSuccessAt),
       },
     });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }
@@ -10752,7 +10754,8 @@ app.get('/api/admin/games/sync-status', requireAdminSession, async (_req: Reques
         c.getFullList<AnyRecord>({ sort: '-updated', fields: 'id,updated' }));
       newestGame = asText(latest?.updated);
     } catch { /* leave it blank rather than fail the whole readout */ }
-    res.json({ status, newestGame, cron: process.env.VM_SYNC_CRON || '0 1 * * *' });
+    const refreshes = VM_SYNC_REFRESH_HOURS.split(',').filter((h) => h.trim()).length;
+    res.json({ status, newestGame, cron: refreshes ? `${VM_SYNC_CRON} + ${refreshes} × :15` : VM_SYNC_CRON });
   } catch (error) {
     res.status(500).json({ error: safeError(error) });
   }
@@ -15553,7 +15556,7 @@ app.listen(port, () => {
     console.log(`[scheduler] Synced ${result.imported}/${result.totalFetched} games (${result.from} -> ${result.to})`);
   });
 
-  // ...and again during the day, so tonight's crew is today's answer.
+  // ...and again every hour, so tonight's crew is today's answer.
   //
   // One scheduleDaily per hour rather than one "0 12,16 * * *": that expression
   // does not match DAILY_CRON_RE, so it would fall through to node-cron — which
@@ -15570,8 +15573,10 @@ app.listen(port, () => {
     scheduleDaily(`15 ${hour} * * *`, `games refresh ${hour}:15`, async () => {
       // Same job as the nightly one: it is idempotent, and a narrower "today
       // only" variant would be a second code path to keep in step with the
-      // first for no gain — the sync already costs one VolleyManager session.
-      const result = await runGamesSyncWithRetry();
+      // first for no gain. One attempt, no retries: the next hour is the retry,
+      // and retrying a site that is down every hour is the knocking that got
+      // this server blocked by VolleyManager.
+      const result = await runGamesSyncWithRetry({}, 0);
       console.log(`[scheduler] Refreshed ${result.imported}/${result.totalFetched} games (${result.from} -> ${result.to})`);
     });
   }

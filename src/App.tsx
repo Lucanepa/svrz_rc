@@ -1443,13 +1443,9 @@ export default function App() {
   const [gameFilterCoachees, setGameFilterCoachees] = useState<string[]>([]);
   const [gameFilterLevels, setGameFilterLevels] = useState<string[]>([]);
   const [gameFilterLeagues, setGameFilterLeagues] = useState<string[]>([]);
-  // SR-Börse, as a filter rather than only a colour: "show me what is at risk"
-  // is a question the list should be able to answer directly, and the rows it
-  // matches are otherwise scattered through a season of fixtures.
-  const [gameFilterBoerse, setGameFilterBoerse] = useState<string[]>([]);
-  /** When each upstream last SUCCEEDED, for the line under a list head. Absence
+  /** When the games sync last SUCCEEDED, for the line under a list head. Absence
    *  of a warning is a claim, and this is what qualifies it. */
-  const [freshness, setFreshness] = useState<{ games: string; boerse: string } | null>(null);
+  const [freshness, setFreshness] = useState<{ games: string } | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const [gameFilterFunction, setGameFilterFunction] = useState<string[]>([]);
   const [gameFilterDateFrom, setGameFilterDateFrom] = useState('');
@@ -3571,7 +3567,7 @@ export default function App() {
   // `isMine` rides along for the same reason: the roster's ids arrive after
   // the subscription and the check must read the current set.
   const isMine = (game: { assignedRc?: string; assignedRcId?: string }) => isMyGame(game, rcAuth, rcKnownIds);
-  // The footer's "Spiele vor …" / "Börse vor …" ages are counted from times the
+  // The footer's "Spiele vor …" age is counted from a time the
   // settings call hands over, and that call ran only at start-up: an installed
   // app left open for two days said "2 d ago" over a sync that ran that
   // afternoon (2026-10-17). Only the freshness is taken here — the rest of the
@@ -3634,8 +3630,8 @@ export default function App() {
     if (!rcAuth.rcName) return;
     const refresh = () => {
       if (document.visibilityState !== 'visible') return;
-      // Throttled inside to one read in five minutes: the Börse runs hourly
-      // and sends no event, so this is what keeps its age honest.
+      // Throttled inside to one read in five minutes: with the stream dead no
+      // "games.synced" arrives, so this is what keeps the age honest.
       void refreshFreshness();
       if (listTab === 'games') void syncGamesQuietly();
       else if (listTab === 'home') void loadHome();
@@ -6771,16 +6767,6 @@ export default function App() {
         const hasMatchingLevel = slotCoachees(g).some((c) => gameFilterLevels.includes(levelDisplay(c.referee_level, c.stage).text));
         if (!hasMatchingLevel) return false;
       }
-      if (gameFilterBoerse.length > 0) {
-        const level = g.boerse?.level ?? 'none';
-        const marked = (g.boerse?.markedSlots?.length ?? 0) > 0;
-        // A union, like the filters around it. `marked` is its own option and
-        // deliberately not a level: a slot in the börse that belongs to nobody
-        // this coach follows colours no row, and "did anyone here offer their
-        // game" is still a fair thing to ask.
-        const match = gameFilterBoerse.some((f) => (f === 'marked' ? marked : f === level));
-        if (!match) return false;
-      }
       if (gameFilterFunction.length > 0) {
         const r1IsCoachee = !!roster.onSlot(g, '1. SR');
         const r2IsCoachee = !!roster.onSlot(g, '2. SR');
@@ -6870,7 +6856,7 @@ export default function App() {
       // timestamps rather than strings so a stray offset cannot reorder a day,
       // and anything undated sinks to the bottom instead of leading.
       .sort((a, b) => gameTime(a.date) - gameTime(b.date));
-  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterBoerse, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterHidePlanned, gameFilterShowInactive, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, roster, inSeasonOrManual, showAllLevels, outOfNiveauFocus, rcAuth.rcId, rcAuth.rcName, rcKnownIds]);
+  }, [eligibleGames, plannedObsByCoachee, listSearch, gameFilterCoachees, gameFilterLevels, gameFilterFunction, gameFilterLeagues, gameFilterDateFrom, gameFilterDateTo, gameFilterNeedsObs, gameFilterHidePlanned, gameFilterShowInactive, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned, gameFilterStarred, expandedGameId, roster, inSeasonOrManual, showAllLevels, outOfNiveauFocus, rcAuth.rcId, rcAuth.rcName, rcKnownIds]);
 
   // Any filter can shrink a list below the page currently shown, and the pager
   // itself disappears under one page of rows — leaving a blank list with no
@@ -8913,7 +8899,7 @@ export default function App() {
                     className="h-9 flex-1 min-w-0 px-3 text-sm border border-stone-300 rounded bg-white outline-none focus-visible:ring-2 focus-visible:ring-red-400"
                   />
                   {(() => {
-                    const activeFilterCount = [gameFilterCoachees.length > 0, gameFilterLevels.length > 0, gameFilterBoerse.length > 0, gameFilterFunction.length > 0, gameFilterLeagues.length > 0, !!gameFilterDateFrom || !!gameFilterDateTo, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned].filter(Boolean).length;
+                    const activeFilterCount = [gameFilterCoachees.length > 0, gameFilterLevels.length > 0, gameFilterFunction.length > 0, gameFilterLeagues.length > 0, !!gameFilterDateFrom || !!gameFilterDateTo, gameFilterLd, gameFilterRcGame, gameFilterRcAssigned].filter(Boolean).length;
                     return (
                       <button
                         onClick={() => setFiltersOpen(!filtersOpen)}
@@ -9084,23 +9070,6 @@ export default function App() {
                         selected={gameFilterLevels}
                         onChange={setGameFilterLevels}
                         placeholder={formData.lang === 'DE' ? 'Alle Level' : 'All levels'}
-                      />
-                    </div>
-                    <div className="flex-1 min-w-[140px] sm:max-w-[220px]">
-                      <label className="block text-xs font-medium text-stone-500 mb-0.5">
-                        {formData.lang === 'DE' ? 'SR-Börse' : 'SR-Börse'}
-                      </label>
-                      <MultiSelectDropdown
-                        lang={formData.lang}
-                        options={['red', 'amber', 'blue', 'marked']}
-                        selected={gameFilterBoerse}
-                        onChange={setGameFilterBoerse}
-                        placeholder={formData.lang === 'DE' ? 'Egal' : 'Any'}
-                        // Values stay stable ('red'), labels say what the colour
-                        // MEANS — nobody thinks of a game as "an amber".
-                        labelOf={(v) => (formData.lang === 'DE'
-                          ? { red: 'Rot · Coachee weg', amber: 'Gelb · 1 von 2', blue: 'Blau · eigener Einsatz', marked: 'Irgendwer in der Börse' }
-                          : { red: 'Red · coachee at risk', amber: 'Amber · 1 of 2', blue: 'Blue · own slot', marked: 'Anyone in the Börse' })[v] ?? v}
                       />
                     </div>
                     <div className="flex-1 min-w-[100px] sm:max-w-[160px]">
@@ -12076,7 +12045,7 @@ export default function App() {
           VolleyManager roles answer the börse 200 with the WRONG row count —
           one of them zero — so a drifted role reads as "no games at risk". */}
       <p className="mx-auto mt-6 text-center no-print">
-        <SyncFreshness games={freshness?.games} boerse={freshness?.boerse} lang={formData.lang} />
+        <SyncFreshness games={freshness?.games} lang={formData.lang} />
       </p>
       <p className="mx-auto mt-1 pb-2 text-center text-[10px] text-stone-400 no-print">
         v{APP_VERSION} · Build {BUILD_INFO}

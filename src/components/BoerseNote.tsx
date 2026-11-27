@@ -85,20 +85,14 @@ export function BoerseNote({ boerse, lang }: { boerse?: BoerseOnGame; lang: 'DE'
 }
 
 /**
- * How old each upstream's data is, for a list head.
+ * How old the games data is, for a list head.
  *
- * BOTH clocks, because they fail independently and the row on screen depends on
- * each: the nightly games sync decides who is on a game at all, the hourly börse
- * poll decides whether they are trying to leave it. A fresh börse over a
- * week-old crew is a confident answer about the wrong referees.
- *
- * Each reads LAST SUCCESS, never the last attempt — a sync that has been failing
+ * Reads LAST SUCCESS, never the last attempt — a sync that has been failing
  * for a week still stamps an attempt every night, so a line built on that can
  * never fire in the failure it exists to catch.
  *
  * An absent or old stamp says so plainly, because "no warnings" and "no data"
- * must not look the same. That is not hypothetical here: three VolleyManager
- * roles answer the börse 200 with the wrong row count, one of them zero.
+ * must not look the same.
  */
 function age(iso: string | undefined, lang: 'DE' | 'EN'): { text: string; mins: number } | null {
   const at = iso ? new Date(iso).getTime() : NaN;
@@ -110,25 +104,17 @@ function age(iso: string | undefined, lang: 'DE' | 'EN'): { text: string; mins: 
   return { text: lang === 'DE' ? `${Math.round(hours / 24)} Tagen` : `${Math.round(hours / 24)} d`, mins };
 }
 
-export function SyncFreshness({ games, boerse, lang }: { games?: string; boerse?: string; lang: 'DE' | 'EN' }) {
+export function SyncFreshness({ games, lang }: { games?: string; lang: 'DE' | 'EN' }) {
   const de = lang === 'DE';
   const g = age(games, lang);
-  const b = age(boerse, lang);
-  // Each has its own patience. The games sync runs nightly, so a day is normal
-  // and two is not; the börse runs every 2 h, so 4½ h means a run was missed
-  // beyond the one skipped in wiedisync's quiet hour.
-  const gStale = !g || g.mins > 36 * 60;
-  const bStale = !b || b.mins > 270;
-  const part = (label: string, a: { text: string } | null, stale: boolean) => (
-    <span className={cn('inline-flex items-center gap-1', stale ? 'font-semibold text-amber-700' : 'text-stone-400')}>
-      <span aria-hidden className={cn('h-1.5 w-1.5 rounded-full', stale ? 'bg-amber-500' : 'bg-green-600')} />
-      {a ? `${label} ${de ? 'vor' : ''} ${a.text}${de ? '' : ' ago'}`.replace(/\s+/g, ' ').trim() : `${label} —`}
-    </span>
-  );
+  // The games sync runs every hour (two night hours are left out), so three
+  // hours means runs were missed.
+  const stale = !g || g.mins > 3 * 60;
+  const label = de ? 'Spiele' : 'Games';
   return (
-    <span className="inline-flex flex-wrap items-center gap-x-2.5 gap-y-0.5 text-[10.5px]">
-      {part(de ? 'Spiele' : 'Games', g, gStale)}
-      {part(de ? 'Börse' : 'Börse', b, bStale)}
+    <span className={cn('inline-flex items-center gap-1 text-[10.5px]', stale ? 'font-semibold text-amber-700' : 'text-stone-400')}>
+      <span aria-hidden className={cn('h-1.5 w-1.5 rounded-full', stale ? 'bg-amber-500' : 'bg-green-600')} />
+      {g ? `${label} ${de ? 'vor' : ''} ${g.text}${de ? '' : ' ago'}`.replace(/\s+/g, ' ').trim() : `${label} —`}
     </span>
   );
 }

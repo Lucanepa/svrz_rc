@@ -1,6 +1,6 @@
 import { test, expect } from '@playwright/test';
 import { parseActionGames, dateChunks, fetchGameCenterGames, __setActionId, type GameCenterGame } from '../server/svrzGameCenter';
-import { transformGameCenterGame, outsideGameCenterScope, refereesSeen, storedMatchDate } from '../server/gamesSync';
+import { transformGameCenterGame, refereesSeen, storedMatchDate } from '../server/gamesSync';
 
 // The games source that replaced the blocked VolleyManager login: the SVRZ
 // public Game Center's own schedule action. All data here is SYNTHETIC — the
@@ -52,7 +52,7 @@ test.describe('date windows (dateEnd is exclusive at the Game Center)', () => {
 test.describe('fetching the region', () => {
   test.beforeEach(() => __setActionId('a'.repeat(40)));
 
-  test('reads SVRZ whole and Swiss Volley for the Mobiliar Cup only, one row per game, no 1L', async () => {
+  test('reads SVRZ whole and Swiss Volley for 1L and the Mobiliar Cup only, one row per game', async () => {
     const asked: string[] = [];
     const fake = (async (_url: string, init: RequestInit) => {
       const q = JSON.parse(String(init.body))[0] as string;
@@ -64,7 +64,7 @@ test.describe('fetching the region', () => {
       return new Response(flight(list), { status: 200 });
     }) as unknown as typeof fetch;
     const games = await fetchGameCenterGames('2026-11-01', '2026-11-07', fake);
-    expect(games.map((g) => g.gameId).sort()).toEqual([1, 2, 3]);
+    expect(games.map((g) => g.gameId).sort()).toEqual([1, 2, 3, 4]);
     expect(asked).toEqual([
       '?region=SVRZ&includeCup=1&dateStart=2026-11-01&dateEnd=2026-11-08',
       '?region=SV&includeCup=1&dateStart=2026-11-01&dateEnd=2026-11-08',
@@ -108,6 +108,8 @@ test.describe('rows in the VolleyManager shape', () => {
     expect(league('2L', 'Frauen 2. Liga')).toBe('2L ♀');
     expect(league('3L', 'Männer 3. Liga Gruppe A', 'm')).toBe('3L ♂ A');
     expect(league('5L', 'Frauen 5. Liga Gruppe D')).toBe('5L ♀ D');
+    expect(league('1L', 'D')).toBe('1L ♀ D'); // 1L groups are a bare letter
+    expect(league('1L', 'C', 'm')).toBe('1L ♂ C');
     expect(league('U23', 'Frauen U23 2. Stärkeklasse')).toBe('DU23 2. Liga');
     expect(league('U23', 'Männer U23 1. Stärkeklasse', 'm')).toBe('HU23 1. Liga');
     expect(league('SM Quali U23', 'SM Quali MU23 A', 'm')).toBe('SM Quali U23 ♂');
@@ -144,13 +146,7 @@ test.describe('rows in the VolleyManager shape', () => {
   });
 });
 
-test.describe('scope and directory', () => {
-  test('1L is outside the sync, so a held 1L game is never reported missing', () => {
-    expect(outsideGameCenterScope('1L ♀ D')).toBe(true);
-    expect(outsideGameCenterScope('2L ♀')).toBe(false);
-    expect(outsideGameCenterScope('')).toBe(false);
-  });
-
+test.describe('referee directory', () => {
   test('the referee directory has everyone once, by SV number', () => {
     const rows = [
       transformGameCenterGame(game({ gameId: 1 })),

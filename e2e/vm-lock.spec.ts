@@ -1,5 +1,5 @@
 import { test, expect } from '@playwright/test';
-import { withVmLock, tryVmLock, vmLockHeldBy, __resetVmLock, __setVmJobTimeoutMs } from '../server/vmlock';
+import { withVmLock, tryVmLock, vmLockHeldBy, __resetVmLock, __setVmJobTimeoutMs, vmFetch, VmBlockedError } from '../server/vmlock';
 
 /**
  * The mutual exclusion around the one shared VolleyManager account.
@@ -135,5 +135,32 @@ test.describe('the VolleyManager account lock', () => {
     expect(vmLockHeldBy()?.label).toBe('contacts-sync');
     after.open();
     await holderNow;
+  });
+});
+
+// 25.11.2026: VolleyManager's web server blocked this address with its stock
+// 403 page, and every retry and poll kept knocking. The first such page must
+// stop all calls; the app's own role 403 must not.
+test.describe('a blocked address stops every VolleyManager call', () => {
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  const answer = (status: number, body: string) => {
+    globalThis.fetch = (async () => { calls += 1; return new Response(body, { status }); }) as typeof fetch;
+  };
+  test.beforeEach(() => { __resetVmLock(); calls = 0; });
+  test.afterEach(() => { globalThis.fetch = realFetch; __resetVmLock(); });
+
+  test('the web server 403 page stops all calls, without another request', async () => {
+    answer(403, '<!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">\n<html><head>\n<title>403 Forbidden</title>\n</head><body><h1>Forbidden</h1></body></html>');
+    await expect(vmFetch('https://vm.example/login')).rejects.toBeInstanceOf(VmBlockedError);
+    await expect(vmFetch('https://vm.example/')).rejects.toBeInstanceOf(VmBlockedError);
+    expect(calls).toBe(1);
+  });
+
+  test("the app's own role 403 is just a response", async () => {
+    answer(403, '{"error":"access denied"}');
+    expect((await vmFetch('https://vm.example/api/x')).status).toBe(403);
+    expect((await vmFetch('https://vm.example/api/x')).status).toBe(403);
+    expect(calls).toBe(2);
   });
 });

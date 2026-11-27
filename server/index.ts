@@ -59,7 +59,7 @@ import {
 // than on a session — so two jobs that need different roles cannot be in flight
 // together without one of them reading under the other's role. That failure is
 // not a 403: it is a clean 200 with the wrong rows.
-import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy } from './vmlock.ts';
+import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy, VmBlockedError } from './vmlock.ts';
 import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
 import { fetchBoerseOffers, planReconcile, gameHolder, boersePollMustSkip, boerseFailureLevel, boerseRecovered, type BoerseOfferRow } from './boerse.ts';
 import { nudgeStep, dueNudgeStep, matchEndedAt, nudgeAgo, NUDGE_DAY_MS, NUDGE_MAX_DAYS } from './reportNudge.ts';
@@ -1414,9 +1414,12 @@ const VM_SYNC_CRON = process.env.VM_SYNC_CRON || '0 1 * * *';
  * 12:00 and 16:00 are roughly 8 h and 4 h before a normal 18:00–20:30 kick-off,
  * so the last read of the day lands after the working day that produces most
  * changes. Both are far from wiedisync's 04:00/04:30 on the shared account.
- * Set to an empty string to go back to nightly-only.
+ *
+ * OFF by default since 27.11.2026: VolleyManager blocked this server's address
+ * on 25.11, and OpenVolley, with one sync a night, never was. Nightly only, plus
+ * the admin's manual sync. Set "12,16" to bring the two refreshes back.
  */
-const VM_SYNC_REFRESH_HOURS = String(process.env.VM_SYNC_REFRESH_HOURS ?? '12,16');
+const VM_SYNC_REFRESH_HOURS = String(process.env.VM_SYNC_REFRESH_HOURS ?? '');
 const VM_SYNC_MAX_RETRIES = Number(process.env.VM_SYNC_MAX_RETRIES || 10);
 const VM_SYNC_RETRY_DELAY_MS = Number(process.env.VM_SYNC_RETRY_DELAY_MS || 15000);
 const RENDER_PROPERTIES = [
@@ -3909,7 +3912,9 @@ async function recordGamesSyncStatus(status: GamesSyncStatus): Promise<void> {
 // ── SR-Börse poll ─────────────────────────────────────────────────────
 // The VM-facing half is server/boerse.ts. This is the half that writes.
 const BOERSE_SYNC_STATUS_KEY = 'boerse_sync_status';
-const BOERSE_ENABLED = process.env.VM_BOERSE_ENABLED !== '0';
+// Off unless VM_BOERSE_ENABLED=1 (27.11.2026): the slow Börse search is the
+// heaviest VolleyManager traffic this server sent before it was blocked.
+const BOERSE_ENABLED = process.env.VM_BOERSE_ENABLED === '1';
 // Every 2 h, not hourly: fewer visits to VolleyManager (it blocked this server 25.11.2026).
 const BOERSE_POLL_MINUTES = Number(process.env.VM_BOERSE_POLL_MINUTES || 120);
 
@@ -3978,7 +3983,7 @@ async function runBoerseSync(reason: string): Promise<BoerseSyncStatus> {
     ...s,
   });
 
-  if (!BOERSE_ENABLED) return base({ skipped: 'disabled (VM_BOERSE_ENABLED=0)' });
+  if (!BOERSE_ENABLED) return base({ skipped: 'disabled (set VM_BOERSE_ENABLED=1 to poll)' });
   const username = asText(process.env.VM_USERNAME);
   const password = asText(process.env.VM_PASSWORD);
   if (!username || !password || !VM_BASE) return base({ skipped: 'VM credentials not configured' });
@@ -4551,7 +4556,8 @@ async function runGamesSyncRetryLoop(windowInput: { date?: unknown; from?: unkno
       }
     } catch (error) {
       lastError = error;
-      if (attempt >= totalAttempts) {
+      // A blocked address is not a bad minute: retrying is exactly the knocking that keeps it blocked.
+      if (attempt >= totalAttempts || error instanceof VmBlockedError) {
         break;
       }
       console.warn(

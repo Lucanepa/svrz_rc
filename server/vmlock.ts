@@ -99,15 +99,45 @@ export function tryVmLock<T>(
   return (async () => ({ ran: true, value: await fn(), blockedBy: '' }))().finally(() => release(mine));
 }
 
+// ── When VolleyManager blocks the address ────────────────────────────
+//
+// 25.11.2026: VolleyManager's web server started refusing this server's address
+// with its stock "403 Forbidden" page, before the app is even reached. The
+// retries and polls kept knocking (one blocked nightly run was ~36 requests),
+// which is the opposite of what a blocked client should do. Now the first such
+// answer stops every VolleyManager call; the next nightly run is the one probe.
+
+/** Thrown instead of a request while the address is blocked. */
+export class VmBlockedError extends Error {}
+
+/** 23 h, not 24: a block found by the 01:00 sync must let the next 01:00 sync
+ *  through as the probe, and that one starts a few seconds earlier in the hour. */
+export const VM_BLOCK_PAUSE_MS = 23 * 60 * 60 * 1000;
+let blockedUntil = 0;
+
+/** The web server's own refusal page. VolleyManager's role 403s come from the
+ *  app and never carry this title, so a wrong role cannot trip the stop. */
+export function isWebServerBlock(body: string): boolean {
+  return /<title>\s*403 Forbidden\s*<\/title>/i.test(body);
+}
+
 /**
- * fetch with a deadline, for every VolleyManager call.
+ * fetch with a deadline, for every VolleyManager call — and the one place that
+ * stops calling once VolleyManager blocks the address (above).
  *
  * Callers that already pass their own `signal` keep it — this only fills in the
  * timeout when there is none, so an abortable job stays abortable.
  */
-export function vmFetch(url: string, init: RequestInit = {}, timeoutMs = VM_REQUEST_TIMEOUT_MS): Promise<Response> {
-  if (init.signal) return fetch(url, init);
-  return fetch(url, { ...init, signal: AbortSignal.timeout(timeoutMs) });
+export async function vmFetch(url: string, init: RequestInit = {}, timeoutMs = VM_REQUEST_TIMEOUT_MS): Promise<Response> {
+  if (Date.now() < blockedUntil) {
+    throw new VmBlockedError(`VolleyManager blocks this server's address: no VolleyManager calls until ${new Date(blockedUntil).toISOString()} (restart svrz-api to try sooner)`);
+  }
+  const res = await fetch(url, init.signal ? init : { ...init, signal: AbortSignal.timeout(timeoutMs) });
+  if (res.status === 403 && isWebServerBlock(await res.clone().text())) {
+    blockedUntil = Date.now() + VM_BLOCK_PAUSE_MS;
+    throw new VmBlockedError(`VolleyManager's web server refused this address (403 Forbidden, ${new URL(url).pathname}): VolleyManager calls stop for ${VM_BLOCK_PAUSE_MS / 3_600_000} h`);
+  }
+  return res;
 }
 
 /** Test seam: drop all lock state. Never call this from request handling. */
@@ -115,6 +145,7 @@ export function __resetVmLock(): void {
   holder = null;
   waiters = [];
   jobTimeoutMs = VM_JOB_TIMEOUT_MS;
+  blockedUntil = 0;
 }
 
 /** Test seam: shorten the takeover deadline so the stuck-job path is testable

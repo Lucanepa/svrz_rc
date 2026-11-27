@@ -5142,8 +5142,8 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
     let niveau_table: Record<string, unknown> = {};
     try { niveau_table = sanitizeNiveauTable(niveauRec ? JSON.parse(asText(niveauRec.value)) : {}); } catch { niveau_table = {}; }
     const default_season = await resolveDefaultSeason();
-    // Both upstream clocks, for the freshness line a coach reads. LAST SUCCESS
-    // on each, never the last attempt — see GamesSyncStatus. Here rather than on
+    // The games clock, for the freshness line a coach reads. LAST SUCCESS,
+    // never the last attempt — see GamesSyncStatus. Here rather than on
     // every game row: it is one fact about the whole screen, and this endpoint
     // is already fetched once on load.
     const gamesStatus = await (async () => {
@@ -5152,14 +5152,12 @@ app.get('/api/settings', requireRcSession, async (_req: Request, res: ExpressRes
         return rec ? JSON.parse(asText(rec.value)) as GamesSyncStatus : null;
       } catch { return null; }
     })();
-    const boerseStatus = await readBoerseStatus();
     res.json({
       default_season, test_mode: await isEmailTestMode(), groups, coachee_targets,
       rc_mandates, default_goal, paid_cap, niveau_table,
       expense_rates: await readExpenseRates(),
       freshness: {
         games: asText(gamesStatus?.lastSuccessAt) || (gamesStatus?.ok ? asText(gamesStatus.at) : ''),
-        boerse: asText(boerseStatus?.lastSuccessAt),
       },
     });
   } catch (error) { res.status(500).json({ error: safeError(error) }); }

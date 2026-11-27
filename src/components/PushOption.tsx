@@ -103,8 +103,8 @@ export default function PushOption({ lang }: { lang: 'DE' | 'EN' }) {
       onClick={() => void tap()}
       className="w-full min-h-12 inline-flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-medium text-stone-700 hover:bg-stone-100 transition-colors cursor-pointer"
       title={de
-        ? 'Spieländerungen, SR-Börse und Tauschanfragen als Benachrichtigung auf diesem Gerät — zusätzlich zur E-Mail.'
-        : 'Game changes, the SR-Börse and switch requests as notifications on this device — besides the e-mail.'}
+        ? 'Spieländerungen und Tauschanfragen als Benachrichtigung auf diesem Gerät — zusätzlich zur E-Mail.'
+        : 'Game changes and switch requests as notifications on this device — besides the e-mail.'}
     >
       {busy ? <Loader2 size={18} className="animate-spin" /> : state === 'on' ? <Bell size={18} /> : <BellOff size={18} />}
       <span className="flex-1 text-left">{de ? 'Benachrichtigungen' : 'Notifications'}</span>

@@ -476,52 +476,6 @@ export async function getGamesSyncStatus(): Promise<GamesSyncStatus> {
   return r.json() as Promise<GamesSyncStatus>;
 }
 
-export type BoerseSyncStatus = {
-  status: {
-    lastAttemptAt: string; lastSuccessAt: string; ok: boolean;
-    offers?: number; open?: number; created?: number; updated?: number; withdrawn?: number;
-    matchedGames?: number; unmatchedOffers?: number; refereesCorrected?: number;
-    alerted?: number; joinVia?: Record<string, number>;
-    blocked?: string; skipped?: string; error?: string; consecutiveFailures?: number;
-  } | null;
-  liveOffers: number;
-  enabled: boolean;
-  pollMinutes: number;
-  accountHeldBy: { label: string; heldMs: number } | null;
-};
-
-export async function getBoerseStatus(): Promise<BoerseSyncStatus> {
-  const r = await fetch(apiUrl('/api/admin/boerse/status'), { credentials: 'include' });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json() as Promise<BoerseSyncStatus>;
-}
-
-/** Ask for a börse poll, and wait for its result by polling the status.
- *
- *  Two requests, on purpose. The poll takes ~80 s against production and a
- *  phone will not hold one request open that long — the server answers 202 at
- *  once and runs it in the background; the status record's `lastAttemptAt`
- *  is written when the run ends, so a status stamped after the tap IS the
- *  result of the tap. Resolves null when the run is still going after
- *  `waitMs`, which the caller reports as "still running" rather than failed. */
-export async function runBoerseSync(waitMs = 3 * 60_000): Promise<BoerseSyncStatus['status']> {
-  const r = await fetch(apiUrl('/api/admin/boerse/sync'), { method: 'POST', credentials: 'include' });
-  if (!r.ok) {
-    const text = await r.text();
-    let message = text;
-    try { message = (JSON.parse(text) as { error?: string }).error || text; } catch { /* not JSON */ }
-    throw new Error(message);
-  }
-  const { startedAt } = await r.json() as { started: boolean; startedAt: string };
-  const deadline = Date.now() + waitMs;
-  while (Date.now() < deadline) {
-    await new Promise((resolve) => setTimeout(resolve, 3000));
-    const { status } = await getBoerseStatus().catch(() => ({ status: null }));
-    if (status?.lastAttemptAt && status.lastAttemptAt >= startedAt) return status;
-  }
-  return null;
-}
-
 export async function getAdminAuthStatus(): Promise<AdminAuthStatus> {
   if (isDemoMode()) return demo.getAdminAuthStatus();
   // A console logout is still owed: revoke it first, and until the server has
@@ -1951,10 +1905,10 @@ export type Settings = {
   // Only the rows an admin changed; everything else follows the official table
   // shipped in niveauTargets.ts.
   niveau_table?: NiveauMatrix;
-  /** When each upstream last SUCCEEDED — not when it was last attempted. A sync
+  /** When the games sync last SUCCEEDED — not when it was last attempted. A sync
    *  that has been failing for a week still writes an attempt timestamp every
    *  night, so a freshness line reading that can never fire. */
-  freshness?: { games: string; boerse: string };
+  freshness?: { games: string };
 };
 export async function getSettings(): Promise<Settings> {
   if (isDemoMode()) return demo.getSettings();

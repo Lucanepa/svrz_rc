@@ -378,7 +378,11 @@ test.describe('a held game VolleyManager no longer lists', () => {
 test('the watch runs only from the unattended default window, and the reminder pushes to the coach', () => {
   const server = readFileSync(new URL('../server/index.ts', import.meta.url), 'utf8');
   expect(server).toMatch(/const defaultWindow = !asText\(windowInput\.date\) && !asText\(windowInput\.from\) && !asText\(windowInput\.to\);\s*if \(defaultWindow\) \{\s*await watchMissingHeldGames\(/);
-  expect(server).toMatch(/complete: items\.length === total/);
+  // Complete by construction since the Game Center: fetchGameCenterGames throws
+  // on any failed call (pinned in svrz-game-center.spec.ts), so a read that
+  // reaches the watch is whole. The 1L games the sync never reads stay out of it.
+  expect(server).toMatch(/total: transformed\.length, complete: true/);
+  expect(server).toMatch(/!outsideGameCenterScope\(g\.league\)/);
   const reminders = server.slice(server.indexOf('async function runMatchReminders'), server.indexOf('async function markRemindersSent'));
   expect(reminders).toMatch(/void pushToCoach\(p\.rcId,/);
 });

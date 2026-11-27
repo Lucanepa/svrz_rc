@@ -19,12 +19,12 @@ test.describe('Ambiguous contact-sync names are surfaced, not guessed at', () =>
       },
     }));
     await page.goto('/admin/settings');
-    await page.getByRole('button', { name: /Fetch contacts|Kontakte/ }).click();
+    await page.getByRole('button', { name: /Take contacts|Kontakte/ }).click();
 
     await expect(page.getByText(/Marco Simon/)).toBeVisible();
     await expect(page.getByText(/Ambiguous name|Mehrdeutiger Name/)).toBeVisible();
     // The "not found" list is a different, milder outcome and stays separate.
-    await expect(page.getByText(/Not found in VolleyManager|Nicht in VolleyManager/)).toBeVisible();
+    await expect(page.getByText(/Not found in the SV register|Nicht im SV-Register/)).toBeVisible();
   });
 });
 

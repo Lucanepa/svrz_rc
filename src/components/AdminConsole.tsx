@@ -213,7 +213,7 @@ const STR = {
     exportXlsx: 'Export xlsx', exportPdf: 'Export PDF', exportNoFigures: 'Die Auswertung pro Coachee ist auf dem Server noch nicht verfügbar — exportiert werden die Stammdaten.', exportFail: (e: string) => `Export fehlgeschlagen: ${e}`,
     importXlsx: 'xlsx importieren', importHint: (s: string) => `Import setzt die Saison ${s}. Bestehende (gleicher Name + Saison) werden aktualisiert.`,
     coacheeData: 'Coachee-Daten', coacheeImportTitle: 'Coachee-Liste importieren', coacheeDataSeason: 'Saison',
-    coacheeDataMoved: 'Import, Kontakte aus VolleyManager, SV-Register und Datenqualität: unter Einstellungen.', coacheeDataOpen: 'Öffnen',
+    coacheeDataMoved: 'Import, Kontakte aus dem SV-Register und Datenqualität: unter Einstellungen.', coacheeDataOpen: 'Öffnen',
     firstName: 'Vorname', lastName: 'Nachname', svNumber: 'SV-Nummer', aliases: 'Frühere Namen', level: 'Niveau', stage: 'Niveau', group: 'Gruppe', email: 'E-Mail', phone: 'Telefon',
     add: 'Hinzufügen', count: (n: number, s: string) => `${n} Coachees · Saison ${s}`, loading: 'Lädt…',
     noCoachees: (s: string) => `Keine Coachees für ${s} — importiere eine xlsx.`,
@@ -238,22 +238,22 @@ const STR = {
     mgPickMore: (n: number) => `… ${n} weitere — Suche eingrenzen.`,
     mgPickUnknown: 'Nicht in der Liste — freier Text.',
     mgPickNoCoachee: 'kein Coachee',
-    mgDirFail: (e: string) => `Schiedsrichterliste aus VolleyManager nicht erreichbar — die Auswahl zeigt nur Coachees. (${e})`,
+    mgDirFail: (e: string) => `Schiedsrichterliste nicht verfügbar — die Auswahl zeigt nur Coachees. (${e})`,
     noEmail: 'Keine E-Mail',
-    syncTitle: 'Kontaktdaten aus VolleyManager',
-    syncHint: 'Holt E-Mail und Telefon aus der VolleyManager-Schiedsrichterliste. Wer dort fehlt, wird auf den Spielen des Saison gesucht (sobald diese aufgeschaltet sind). Ohne E-Mail lässt sich kein Feedback abschicken.',
-    syncBtn: 'Kontakte holen',
+    syncTitle: 'Kontaktdaten aus dem SV-Register',
+    syncHint: 'Übernimmt E-Mail, Telefon und Niveau aus dem importierten SV-Register, per SV-Nr. Ohne E-Mail lässt sich kein Feedback abschicken.',
+    syncBtn: 'Kontakte übernehmen',
     syncOverwrite: 'Vorhandene Einträge überschreiben (sonst werden nur leere Felder gefüllt)',
-    syncResult: (u: number, a: number, n: number, f: number) => `${u} aktualisiert, ${a} bereits vollständig, ${n} nicht gefunden (${f} SR in VolleyManager).`,
+    syncResult: (u: number, a: number, n: number, f: number) => `${u} aktualisiert, ${a} bereits vollständig, ${n} nicht gefunden (${f} SR im Register).`,
     syncFail: (e: string) => `Kontakt-Abgleich fehlgeschlagen: ${e}`,
-    syncNotFoundList: 'Nicht in VolleyManager gefunden',
+    syncNotFoundList: 'Nicht im SV-Register gefunden',
     syncAmbiguous: 'Mehrdeutiger Name — nichts übernommen, bitte von Hand prüfen',
     syncMissingEmail: (n: number, total: number) => `${n} von ${total} Coachees haben keine E-Mail — für diese kann kein Feedback abgeschickt werden.`,
     rosterTitle: 'Schiedsrichter-Register (SV-Nr.)',
     rosterHint: 'Die SVRZ-Liste „Schiedsrichter verwalten" als xlsx — alle lizenzierten SR, nicht nur die Coachees. Schlüssel ist die SV-Nr.: Namen ändern sich, Nummern nicht. Der Import verknüpft jeden Coachee einmalig mit seiner Nummer; ab dann zählt die Nummer, nicht die Schreibweise.',
     rosterImport: 'Register importieren',
     rosterCount: (n: number) => `${n} Schiedsrichter im Register`,
-    rosterEmpty: 'Register noch leer — die Auswahl im Testspiel-Formular zeigt bis dahin die VolleyManager-Liste (ohne Nummern).',
+    rosterEmpty: 'Register noch leer — die Auswahl im Testspiel-Formular zeigt bis dahin die SR aus dem Spielplan (ohne Kontakte).',
     rosterResult: (created: number, updated: number, linked: number) => `${created} neu, ${updated} aktualisiert · ${linked} Coachees mit ihrer SV-Nr. verknüpft.`,
     rosterAmbiguous: 'Mehrdeutiger Name — keine Nummer gesetzt, bitte von Hand prüfen',
     rosterUnmatched: 'Coachees ohne Eintrag im Register',
@@ -547,7 +547,7 @@ const STR = {
     exportXlsx: 'Export xlsx', exportPdf: 'Export PDF', exportNoFigures: 'The per-coachee figures are not on the server yet; the roster columns were exported.', exportFail: (e: string) => `Export failed: ${e}`,
     importXlsx: 'Import xlsx', importHint: (s: string) => `Import targets season ${s}. Existing (same name + season) are updated.`,
     coacheeData: 'Coachee data', coacheeImportTitle: 'Import the coachee list', coacheeDataSeason: 'Season',
-    coacheeDataMoved: 'Import, VolleyManager contacts, SV register and data quality: under Settings.', coacheeDataOpen: 'Open',
+    coacheeDataMoved: 'Import, contacts from the SV register and data quality: under Settings.', coacheeDataOpen: 'Open',
     firstName: 'First name', lastName: 'Last name', svNumber: 'SV number', aliases: 'Former names', level: 'Level', stage: 'Niveau', group: 'Group', email: 'Email', phone: 'Phone',
     add: 'Add', count: (n: number, s: string) => `${n} coachees · season ${s}`, loading: 'Loading…',
     noCoachees: (s: string) => `No coachees for ${s} — import an xlsx.`,
@@ -572,22 +572,22 @@ const STR = {
     mgPickMore: (n: number) => `… ${n} more — narrow the search.`,
     mgPickUnknown: 'Not in the list — free text.',
     mgPickNoCoachee: 'not a coachee',
-    mgDirFail: (e: string) => `The VolleyManager referee list could not be reached — the pickers show coachees only. (${e})`,
+    mgDirFail: (e: string) => `The referee list is not available — the pickers show coachees only. (${e})`,
     noEmail: 'No email',
-    syncTitle: 'Contact details from VolleyManager',
-    syncHint: 'Pulls email and phone from the VolleyManager referee list. Anyone missing there is looked up on the season\'s games (once those are published). Feedback cannot be submitted without an email.',
-    syncBtn: 'Fetch contacts',
+    syncTitle: 'Contact details from the SV register',
+    syncHint: 'Takes email, phone and level from the imported SV register, by SV number. Feedback cannot be submitted without an email.',
+    syncBtn: 'Take contacts',
     syncOverwrite: 'Overwrite existing entries (otherwise only empty fields are filled)',
-    syncResult: (u: number, a: number, n: number, f: number) => `${u} updated, ${a} already complete, ${n} not found (${f} referees in VolleyManager).`,
+    syncResult: (u: number, a: number, n: number, f: number) => `${u} updated, ${a} already complete, ${n} not found (${f} referees in the register).`,
     syncFail: (e: string) => `Contact sync failed: ${e}`,
-    syncNotFoundList: 'Not found in VolleyManager',
+    syncNotFoundList: 'Not found in the SV register',
     syncAmbiguous: 'Ambiguous name — nothing written, please check by hand',
     syncMissingEmail: (n: number, total: number) => `${n} of ${total} coachees have no email — feedback cannot be submitted for them.`,
     rosterTitle: 'Referee register (SV no.)',
     rosterHint: 'The SVRZ "Schiedsrichter verwalten" list as xlsx — every licensed referee, not only the coachees. The SV number is the key: names change, numbers do not. The import links each coachee to their number once; after that the number decides, not the spelling.',
     rosterImport: 'Import register',
     rosterCount: (n: number) => `${n} referees in the register`,
-    rosterEmpty: 'Register still empty — until it is filled, the test-game pickers show the VolleyManager list (which carries no numbers).',
+    rosterEmpty: 'Register still empty — until it is filled, the test-game pickers show the referees from the schedule (no contacts).',
     rosterResult: (created: number, updated: number, linked: number) => `${created} new, ${updated} updated · ${linked} coachees linked to their SV number.`,
     rosterAmbiguous: 'Ambiguous name — no number written, please check by hand',
     rosterUnmatched: 'Coachees with no entry in the register',
@@ -5219,7 +5219,7 @@ function GameImportCard({ lang }: { lang: Lang }) {
       bad ? 'border-red-300 bg-red-50 text-red-800' : 'border-stone-200 bg-white text-stone-600')}>
       <div className="flex flex-wrap items-start gap-2">
         <div className="min-w-0">
-          <div className="font-semibold mb-0.5">{de ? 'Spiel-Import (VolleyManager)' : 'Game import (VolleyManager)'}</div>
+          <div className="font-semibold mb-0.5">{de ? 'Spiel-Import (SVRZ Game Center)' : 'Game import (SVRZ Game Center)'}</div>
           {sync ? (
             <>
               <div>
@@ -5256,8 +5256,8 @@ function GameImportCard({ lang }: { lang: Lang }) {
       {sync && bad && (
         <div className="mt-1 font-medium">
           {de
-            ? 'Der nächtliche Import hat zuletzt nicht erfolgreich gelaufen. Prüfe die VolleyManager-Verbindung (Rolle des Sync-Kontos).'
-            : 'The nightly import did not last run successfully. Check the VolleyManager connection (the sync account\u2019s role).'}
+            ? 'Der nächtliche Import hat zuletzt nicht erfolgreich gelaufen. Prüfe, ob svrz.ch/game-center erreichbar ist.'
+            : 'The nightly import did not last run successfully. Check that svrz.ch/game-center answers.'}
         </div>
       )}
       {note && <p className="mt-2 rounded-lg border border-green-100 bg-green-50 px-3 py-2 text-green-700">{note}</p>}

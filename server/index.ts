@@ -59,12 +59,12 @@ import {
 // than on a session — so two jobs that need different roles cannot be in flight
 // together without one of them reading under the other's role. That failure is
 // not a 403: it is a clean 200 with the wrong rows.
-import { withVmLock, tryVmLock, vmFetch, vmLockHeldBy, VmBlockedError } from './vmlock.ts';
-import { CookieJar, followRedirects as followRedirectsBase, type VmTraceEntry } from './vmhttp.ts';
+import { withVmLock, tryVmLock, vmLockHeldBy, VmBlockedError } from './vmlock.ts';
 import { fetchBoerseOffers, planReconcile, gameHolder, boersePollMustSkip, boerseFailureLevel, boerseRecovered, type BoerseOfferRow } from './boerse.ts';
 import { nudgeStep, dueNudgeStep, matchEndedAt, nudgeAgo, NUDGE_DAY_MS, NUDGE_MAX_DAYS } from './reportNudge.ts';
 import { handedOverIds, pickSwitch, switchExpiry, switchOpen, switchSettlement, type HandOver, type SlotBooking } from './switchRequests.ts';
-import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, heldGameChange, missingHeldGames, CREW_RELEASE_MIN_DAYS, type HeldGameChange, type HeldGameSide, type HeldSlot, type MissingGamesState } from './gamesSync.ts';
+import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, heldGameChange, missingHeldGames, CREW_RELEASE_MIN_DAYS, transformGameCenterGame, outsideGameCenterScope, refereesSeen, type HeldGameChange, type HeldGameSide, type HeldSlot, type MissingGamesState } from './gamesSync.ts';
+import { fetchGameCenterGames } from './svrzGameCenter.ts';
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
 import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, planRegisterWrite, orphanedHandEntry, type BackfillPlan, type LinkProblem, type RegisterWrite } from './dataHygiene.ts';
 import { withGboSummary, GBO_SUMMARY_VERSION } from './gboSummary.ts';
@@ -1415,42 +1415,14 @@ const VM_SYNC_CRON = process.env.VM_SYNC_CRON || '0 1 * * *';
  * so the last read of the day lands after the working day that produces most
  * changes. Both are far from wiedisync's 04:00/04:30 on the shared account.
  *
- * OFF by default since 27.11.2026: VolleyManager blocked this server's address
- * on 25.11, and OpenVolley, with one sync a night, never was. Nightly only, plus
- * the admin's manual sync. Set "12,16" to bring the two refreshes back.
+ * Off for a few days after VolleyManager blocked this server (25.11.2026); back
+ * on now that the games come from the SVRZ Game Center, where a run is ~10 light
+ * requests — and with the SR-Börse gone, these are what bring a same-day crew
+ * change in. Set to an empty string for nightly only.
  */
-const VM_SYNC_REFRESH_HOURS = String(process.env.VM_SYNC_REFRESH_HOURS ?? '');
+const VM_SYNC_REFRESH_HOURS = String(process.env.VM_SYNC_REFRESH_HOURS ?? '12,16');
 const VM_SYNC_MAX_RETRIES = Number(process.env.VM_SYNC_MAX_RETRIES || 10);
 const VM_SYNC_RETRY_DELAY_MS = Number(process.env.VM_SYNC_RETRY_DELAY_MS || 15000);
-const RENDER_PROPERTIES = [
-  'game.startingDateTime', 'gameDayOfWeek', 'game.number',
-  'game.group.phase.league.leagueCategory.name',
-  'game.group.phase.league.leagueCategory.shortName',
-  'game.group.phase.league.leagueCategory.displayNameWithManagingAssociationShortName',
-  'game.group.phase.league.gender',
-  'game.group.phase.league.name',
-  'game.group.phase.league.displayName',
-  'game.group.name', 'game.group.displayName',
-  'game.group.phase.name', 'game.group.phase.displayName',
-  'game.encounter.teamHome.identifier', 'game.encounter.teamHome.name',
-  'game.encounter.teamAway.identifier', 'game.encounter.teamAway.name',
-  'game.hall.name', 'game.hall.displayName',
-  'game.hall.primaryPostalAddress.combinedAddress',
-  'game.hall.primaryPostalAddress.postalCode',
-  'game.hall.primaryPostalAddress.city',
-  'game.hall.primaryPostalAddress.geographicalLocation.plusCode',
-  'game.hall.primaryPostalAddress.geographicalLocation.latitude',
-  'game.hall.primaryPostalAddress.geographicalLocation.longitude',
-  'activeFirstHeadRefereeName', 'activeSecondHeadRefereeName',
-  'activeFirstLineJudgeName', 'activeSecondLineJudgeName',
-  'refereeConvocations.*.indoorAssociationReferee.indoorReferee.person.displayName',
-  'isSupervised', 'hasAtLeastOneRefereeIntendedToBeSupervised',
-  'isLinesmanOneSupervised', 'isLinesmanTwoSupervised',
-  'isLinesmanThreeSupervised', 'isLinesmanFourSupervised',
-  'game.gameResultReportFromHomeTeam',
-  'game.gameResultReportFromReferee',
-  'game.gameResultReportFromChampionshipOwner',
-];
 // Note: this list only drives the columns VM renders — the search response
 // carries every property of the object either way (verified against a captured
 // browser session), which is why fields like `refereeSupervisorNeeded` can be
@@ -2155,19 +2127,6 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
-// CookieJar and followRedirects live in server/vmhttp.ts — the börse poller
-// needs the same two and must not import this file, which starts a server.
-
-/** followRedirects with this app's VolleyManager base already applied. */
-function followRedirects(
-  url: string, jar: CookieJar, init: RequestInit = {},
-  maxRedirects = 10, trace?: VmTraceEntry[], step = 'request',
-): Promise<{ response: Response; body: string }> {
-  return followRedirectsBase(VM_BASE, url, jar, init, maxRedirects, trace, step);
-}
-
-// VmTraceEntry now comes from server/vmhttp.ts, beside followRedirects.
-
 /** Was: log in to PocketBase as superuser. Postgres needs no per-call login —
  *  the connection string carries it — so this is a no-op the 100-odd route
  *  handlers that call it can keep calling until the typed rewrite. */
@@ -2279,402 +2238,6 @@ async function upsertGame(gameData: ReturnType<typeof mapIncomingGame>, manualId
   });
 }
 
-
-// Cache VM session to avoid re-login on every sync retry (valid for 30 min)
-type VmSession = { jar: CookieJar; csrfToken: string; windowUniqueId: string };
-let vmCsrfCache: (VmSession & { cachedAt: number }) | null = null;
-const VM_CSRF_CACHE_TTL_MS = 30 * 60 * 1000;
-
-
-// ── VolleyManager roles ──────────────────────────────────────────────
-// One VM account, and no single role can do both jobs. Measured 2026-08-12
-// against the production account:
-//
-//   role                                     refereegame   addressviewer
-//   Indoorvolleyball.RefAdmin:RefereeDelegate    200           403
-//   SportManager.Indoorvolleyball:*(club)        403           200
-//   everything else                              403           403
-//
-// So the games sync needs the referee-delegate role and the contact sync needs
-// a club one, and whichever a human last picked in the VM UI decides whether
-// either works. That is how the games import died unnoticed for three weeks.
-// Each job now switches the session into the role it needs before it starts.
-//
-// The value is an *attribute value* id, not a role name: it is the
-// `persistenceObjectIdentifier` of an entry in
-// `party.groupedEligibleAttributeValues` (visible at
-// `GET /api/sportmanager.security/api%5cparty?party[__identity]=<partyId>`,
-// which the account menu calls). They are per-account, so they are overridable
-// — if VM_USERNAME ever changes, re-read them there and set these.
-const VM_ROLE_FOR_GAMES = process.env.VM_ROLE_ATTRIBUTE_GAMES
-  || 'e693b8cf-3fda-4a8d-b091-b3c7dae850ec'; // Indoorvolleyball.RefAdmin:RefereeDelegate
-const VM_ROLE_FOR_CONTACTS = process.env.VM_ROLE_ATTRIBUTE_CONTACTS
-  || 'ed24d37c-5444-4c5d-b602-623eff84d400'; // SportManager.Indoorvolleyball:PlayingScheduleResponsible
-
-/**
- * Point the logged-in session at a particular role. Best effort: if the switch
- * fails, the caller's own page fetch will fail with a clearer message than
- * anything this could throw, and the session may already be on the right role
- * (in which case the switch is unnecessary anyway).
- */
-async function vmSwitchRole(jar: CookieJar, csrfToken: string, attributeValueId: string): Promise<boolean> {
-  if (!attributeValueId || !csrfToken) return false;
-  try {
-    const body = new URLSearchParams();
-    body.set('attributeValueAsArray[0]', attributeValueId);
-    body.set('__csrfToken', csrfToken);
-    const res = await vmFetch(`${VM_BASE}/api/sportmanager.security/api%5cparty/switchRoleAndAttribute`, {
-      method: 'PUT',
-      headers: {
-        'Content-Type': 'application/x-www-form-urlencoded',
-        Accept: '*/*',
-        Origin: VM_BASE,
-        Referer: `${VM_BASE}/`,
-        Cookie: jar.header(),
-      },
-      body: body.toString(),
-    });
-    if (!res.ok) {
-      console.warn(`[vm] role switch to ${attributeValueId} returned ${res.status}`);
-      return false;
-    }
-    console.log(`[vm] switched the session to role attribute ${attributeValueId}`);
-    return true;
-  } catch (error) {
-    console.warn('[vm] role switch failed:', error);
-    return false;
-  }
-}
-
-async function vmLogin(username: string, password: string): Promise<VmSession> {
-  if (vmCsrfCache && (Date.now() - vmCsrfCache.cachedAt) < VM_CSRF_CACHE_TTL_MS) {
-    console.log('[vm] Using cached CSRF token');
-    // The role lives on the VM session, not on this cache, so a contact sync
-    // in between will have moved the very session being reused here onto a club
-    // role. Re-assert before handing it back, or the second job of the day
-    // quietly runs as the wrong person.
-    await vmSwitchRole(vmCsrfCache.jar, vmCsrfCache.csrfToken, VM_ROLE_FOR_GAMES);
-    return { jar: vmCsrfCache.jar, csrfToken: vmCsrfCache.csrfToken, windowUniqueId: vmCsrfCache.windowUniqueId };
-  }
-  return vmLoginWithTrace(username, password);
-}
-
-async function vmLoginWithTrace(
-  username: string,
-  password: string,
-  trace?: VmTraceEntry[],
-): Promise<VmSession> {
-  const jar = new CookieJar();
-  // Pre-set language cookie — VM expects it (browser always sends it)
-  jar.set('language', 'de');
-  const { body: loginHtml } = await followRedirects(`${VM_BASE}/login`, jar, {}, 10, trace, 'login-page');
-
-  const hiddenFields: Record<string, string> = {};
-  const hiddenRegex = /name="([^"]+)"[^>]*value="([^"]*?)"/g;
-  for (const match of loginHtml.matchAll(hiddenRegex)) {
-    hiddenFields[match[1]] = match[2];
-  }
-
-  hiddenFields['__authentication[Neos][Flow][Security][Authentication][Token][UsernamePassword][username]'] = username;
-  hiddenFields['__authentication[Neos][Flow][Security][Authentication][Token][UsernamePassword][password]'] = password;
-
-  await followRedirects(
-    `${VM_BASE}/sportmanager.security/authentication/authenticate`,
-    jar,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: new URLSearchParams(hiddenFields).toString(),
-    },
-    10,
-    trace,
-    'authenticate',
-  );
-
-  // Visit dashboard — required to establish session permissions before referee-index
-  const { body: dashboardHtml } = await followRedirects(`${VM_BASE}/`, jar, {}, 10, trace, 'dashboard');
-
-  // The dashboard opens under every role and carries a CSRF token, which is
-  // what lets us ask for the one role that can read the game list below.
-  const dashboardCsrf = dashboardHtml.match(/data-csrf-token="([^"]+)"/)?.[1] ?? '';
-  await vmSwitchRole(jar, dashboardCsrf, VM_ROLE_FOR_GAMES);
-
-  const tokenPatterns = [
-    /data-csrf-token="([^"]+)"/,
-    /name="__csrfToken"[^>]*value="([^"]+)"/,
-    /name="_csrf"[^>]*value="([^"]+)"/,
-    /meta\s+name="csrf-token"\s+content="([^"]+)"/,
-  ];
-
-  // Retry CSRF page fetch — VM sometimes returns 403 if session isn't propagated yet
-  const csrfRetries = 5;
-  const csrfRetryDelayMs = 3000;
-  let lastTitle = 'unknown';
-  let lastLoginHint = '';
-
-  for (let attempt = 1; attempt <= csrfRetries; attempt += 1) {
-    if (attempt > 1) {
-      console.warn(`[vm] CSRF page attempt ${attempt}/${csrfRetries} — retrying in ${csrfRetryDelayMs}ms...`);
-      await sleep(csrfRetryDelayMs);
-    }
-
-    const { body: refereeHtml } = await followRedirects(
-      `${VM_BASE}/indoorvolleyball.refadmin/refereegame/index`,
-      jar,
-      {
-        headers: {
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-          'Accept-Language': 'de-CH,de;q=0.9,en;q=0.8',
-          Referer: `${VM_BASE}/`,
-          'Sec-Fetch-Dest': 'document',
-          'Sec-Fetch-Mode': 'navigate',
-          'Sec-Fetch-Site': 'same-origin',
-        },
-      },
-      10,
-      trace,
-      `referee-index-attempt-${attempt}`,
-    );
-
-    for (const pattern of tokenPatterns) {
-      const match = refereeHtml.match(pattern);
-      if (match?.[1]) {
-        const wuidMatch = refereeHtml.match(/data-window-unique-id="([^"]+)"/);
-        const windowUniqueId = wuidMatch?.[1] || '';
-        vmCsrfCache = { jar, csrfToken: match[1], windowUniqueId, cachedAt: Date.now() };
-        return { jar, csrfToken: match[1], windowUniqueId };
-      }
-    }
-
-    const titleMatch = refereeHtml.match(/<title>([^<]+)<\/title>/i);
-    lastTitle = titleMatch?.[1] || 'unknown';
-    lastLoginHint = refereeHtml.includes('/login') ? 'Likely redirected to login (credentials/permissions).' : 'No login redirect hint detected.';
-  }
-
-  throw new Error(`Could not extract CSRF token after login (${csrfRetries} attempts). Page title: "${lastTitle}". ${lastLoginHint}`);
-}
-
-function buildVmSearchBody(csrfToken: string, offset: number, limit: number, from: string, to: string): string {
-  const params = new URLSearchParams();
-  params.set('searchConfiguration[propertyFilters][0][propertyName]', 'game.startingDateTime');
-  params.set('searchConfiguration[propertyFilters][0][dateRange][from]', from);
-  params.set('searchConfiguration[propertyFilters][0][dateRange][to]', to);
-  params.set('searchConfiguration[customFilters]', '');
-  params.set('searchConfiguration[propertyOrderings][0][propertyName]', 'game.startingDateTime');
-  params.set('searchConfiguration[propertyOrderings][0][descending]', 'false');
-  params.set('searchConfiguration[propertyOrderings][0][isSetByUser]', 'true');
-  params.set('searchConfiguration[offset]', String(offset));
-  params.set('searchConfiguration[limit]', String(limit));
-  params.set('searchConfiguration[textSearchOperator]', 'AND');
-  RENDER_PROPERTIES.forEach((property, index) => {
-    params.set(`propertyRenderConfiguration[${index}]`, property);
-  });
-  params.set('__csrfToken', csrfToken);
-  return params.toString();
-}
-
-// ── Referee contact details from VolleyManager ───────────────────────
-// The SVRZ referee XLSX carries no email column, so imported coachees have no
-// address — and POST /api/feedback hard-fails without one, at the very end of
-// a filled-in form. VM's "Schiedsrichterliste" (refereeAddressViewer) holds an
-// email and phone for every licensed referee, so pull them from there as a
-// follow-up step to the import.
-type VmRefereeContact = { firstName: string; lastName: string; email: string; phone: string; level: string };
-
-const VM_CONTACT_COLUMNS = [
-  'person.lastName',
-  'person.firstName',
-  'person.primaryEmailAddress.emailAddress',
-  'person.primaryPhoneNumber.normalizedLocalNumber',
-  // Niveau (N1..N4). The XLSX's Niveau column is a snapshot of import day, so a
-  // promotion since then leaves us showing the old level for a whole season —
-  // seven coachees were stale when this was added (2026-08-23). The path comes
-  // from VM's public label catalogue (`activeSeasonalRefereeData…refereeLevel.name`
-  // = "Niveau"); this search returns ONLY the columns asked for, so it has to be
-  // requested explicitly.
-  //
-  // The Niveau*stufe* (the "-3" in "N4-3") is NOT available here: it lives on
-  // IndoorAssociationReferee, and that API answers 403 under every role this
-  // account can hold. `stage` therefore stays whatever the import set.
-  'activeSeasonalRefereeData.activeIndoorRefereeLevel.refereeLevel.name',
-];
-const VM_CONTACT_PAGE_SIZE = 400;
-
-// Wrapped here rather than at its two call sites, because both of them are
-// independent top-level operations and neither runs inside another VM job —
-// the lock is NOT reentrant, so it must be taken at exactly one level.
-async function fetchVmRefereeContacts(username: string, password: string): Promise<VmRefereeContact[]> {
-  return withVmLock('contacts-sync', () => fetchVmRefereeContactsUnlocked(username, password));
-}
-
-async function fetchVmRefereeContactsUnlocked(username: string, password: string): Promise<VmRefereeContact[]> {
-  const jar = new CookieJar();
-  jar.set('language', 'de');
-  const { body: loginHtml } = await followRedirects(`${VM_BASE}/login`, jar, {}, 10);
-  const hidden: Record<string, string> = {};
-  for (const m of loginHtml.matchAll(/name="([^"]+)"[^>]*value="([^"]*?)"/g)) hidden[m[1]] = m[2];
-  const authPrefix = '__authentication[Neos][Flow][Security][Authentication][Token][UsernamePassword]';
-  hidden[`${authPrefix}[username]`] = username;
-  hidden[`${authPrefix}[password]`] = password;
-  await followRedirects(`${VM_BASE}/sportmanager.security/authentication/authenticate`, jar, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams(hidden).toString(),
-  }, 10);
-  const { body: dash } = await followRedirects(`${VM_BASE}/`, jar, {}, 10);
-  // The address viewer opens under a CLUB role and 403s under the referee one —
-  // the exact opposite of the game list (see VM_ROLE_FOR_GAMES). Whichever role
-  // the last job left behind, put the session back where this one needs it.
-  await vmSwitchRole(jar, dash.match(/data-csrf-token="([^"]+)"/)?.[1] ?? '', VM_ROLE_FOR_CONTACTS);
-
-  // The CSRF token comes from the address-viewer page itself, not the refadmin
-  // game list vmLogin() uses — that one 403s under this role.
-  const viewerUrl = `${VM_BASE}/sportmanager.indoorvolleyball/refereeaddressviewer/index`;
-  const { body: page } = await followRedirects(viewerUrl, jar, {
-    headers: { Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
-  }, 10);
-  const csrfToken = page.match(/data-csrf-token="([^"]+)"/)?.[1] ?? '';
-  const windowUniqueId = page.match(/data-window-unique-id="([^"]+)"/)?.[1] ?? '';
-  if (!csrfToken) {
-    const title = page.match(/<title>([^<]*)<\/title>/i)?.[1]?.trim() ?? 'unknown';
-    throw new Error(`Could not open the VolleyManager referee list (page: "${title.slice(0, 60)}").`);
-  }
-
-  const url = `${VM_BASE}/api/sportmanager.indoorvolleyball/api%5crefereeaddressviewer/search`;
-  const headers: Record<string, string> = {
-    'Content-Type': 'text/plain;charset=UTF-8',
-    Accept: '*/*',
-    Origin: VM_BASE,
-    Referer: viewerUrl,
-    'Window-Unique-Id': windowUniqueId,
-    Cookie: jar.header(),
-  };
-  const body = (offset: number) => {
-    const params = new URLSearchParams();
-    params.set('searchConfiguration[customFilters]', '');
-    params.set('searchConfiguration[offset]', String(offset));
-    params.set('searchConfiguration[limit]', String(VM_CONTACT_PAGE_SIZE));
-    params.set('searchConfiguration[textSearchOperator]', 'AND');
-    VM_CONTACT_COLUMNS.forEach((property, index) => params.set(`propertyRenderConfiguration[${index}]`, property));
-    params.set('__csrfToken', csrfToken);
-    return params.toString();
-  };
-
-  const out: VmRefereeContact[] = [];
-  let total = Infinity;
-  // Paged by an explicit offset rather than by out.length: an item that carries
-  // no `person` is skipped, so a page made of those would leave out.length
-  // where it was and ask VolleyManager for the very same page forever.
-  let offset = 0;
-  while (offset < total) {
-    const response = await vmFetch(url, { method: 'POST', headers, body: body(offset) });
-    if (!response.ok) {
-      throw new Error(`VolleyManager referee list failed: ${response.status} ${(await response.text()).slice(0, 120)}`);
-    }
-    const payload = await response.json() as { items?: unknown[]; totalItemsCount?: number };
-    total = payload.totalItemsCount ?? 0;
-    const items = payload.items ?? [];
-    if (items.length === 0) break;
-    offset += items.length;
-    for (const raw of items) {
-      const person = (raw as AnyRecord)?.person as AnyRecord | undefined;
-      if (!person) continue;
-      out.push({
-        firstName: asText(person.firstName),
-        lastName: asText(person.lastName),
-        email: asText(deepGet(person, 'primaryEmailAddress', 'emailAddress')),
-        phone: asText(deepGet(person, 'primaryPhoneNumber', 'normalizedLocalNumber')),
-        // Niveau hangs off the item, not the person.
-        level: asText(deepGet(raw as AnyRecord, 'activeSeasonalRefereeData', 'activeIndoorRefereeLevel', 'refereeLevel', 'name')),
-      });
-    }
-  }
-  return out;
-}
-
-type VmContact = { email: string; phone: string; level?: string };
-async function fetchAllVmGames(
-  jar: CookieJar,
-  csrfToken: string,
-  from: string,
-  to: string,
-  windowUniqueId = '',
-): Promise<{ items: unknown[]; total: number }> {
-  const url = `${VM_BASE}/api/indoorvolleyball.refadmin/api%5celasticsearchrefereegame/searchForManagingAssociation`;
-  const headers: Record<string, string> = {
-    'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/134.0.0.0 Safari/537.36',
-    'Content-Type': 'text/plain;charset=UTF-8',
-    Accept: '*/*',
-    'Accept-Language': 'de-CH,de;q=0.9,en;q=0.8',
-    Origin: VM_BASE,
-    Referer: `${VM_BASE}/indoorvolleyball.refadmin/refereegame/index`,
-    'Sec-Fetch-Dest': 'empty',
-    'Sec-Fetch-Mode': 'cors',
-    'Sec-Fetch-Site': 'same-origin',
-    Cookie: jar.header(),
-  };
-  if (windowUniqueId) {
-    headers['Window-Unique-Id'] = windowUniqueId;
-  }
-
-  console.log(`[vm] Fetching games from ${from} to ${to} — first batch...`);
-  const firstResponse = await vmFetch(url, {
-    method: 'POST',
-    headers,
-    body: buildVmSearchBody(csrfToken, 0, VM_BATCH_SIZE, from, to),
-  });
-  console.log(`[vm] First batch response: ${firstResponse.status}`);
-  if (!firstResponse.ok) {
-    const body = await firstResponse.text();
-    throw new Error(`Upstream search failed: ${firstResponse.status} — ${body.slice(0, 200)}`);
-  }
-
-  const firstResult = await firstResponse.json() as { items?: unknown[]; totalItemsCount?: number };
-  const items = [...(firstResult.items ?? [])];
-  const total = firstResult.totalItemsCount ?? 0;
-  console.log(`[vm] First batch: ${items.length} items, total: ${total}`);
-
-  while (items.length < total) {
-    console.log(`[vm] Fetching batch at offset ${items.length}/${total}...`);
-    const response = await vmFetch(url, {
-      method: 'POST',
-      headers,
-      body: buildVmSearchBody(csrfToken, items.length, VM_BATCH_SIZE, from, to),
-    });
-    console.log(`[vm] Batch response: ${response.status}`);
-    if (!response.ok) {
-      // Was a bare break, so a failure on page 2 of 4 returned a short list that
-      // ran through the importer and was recorded as ok:true — the admin card
-      // stayed green over a half-imported season, and its cross-check (the
-      // newest game's `updated`) is refreshed by a partial run too. The first
-      // page already throws on a bad status; the rest now behave the same.
-      throw new Error(
-        `VolleyManager game list failed at offset ${items.length}/${total}: ${response.status} ${(await response.text()).slice(0, 120)}`,
-      );
-    }
-    const batch = await response.json() as { items?: unknown[] };
-    const nextItems = batch.items ?? [];
-    if (nextItems.length === 0) {
-      break;
-    }
-    items.push(...nextItems);
-    console.log(`[vm] Progress: ${items.length}/${total}`);
-  }
-
-  return { items, total };
-}
-
-function deepGet(obj: unknown, ...keys: string[]): unknown {
-  let current: unknown = obj;
-  for (const key of keys) {
-    if (current && typeof current === 'object' && key in (current as Record<string, unknown>)) {
-      current = (current as Record<string, unknown>)[key];
-    } else {
-      return null;
-    }
-  }
-  return current ?? null;
-}
 
 function gradeToScore(value: string): number | null {
   const normalized = value.trim().toUpperCase();
@@ -2899,197 +2462,6 @@ async function resolveRefereeCoachPersonId(rcName: string, rcId = ''): Promise<s
   // record (which could never log in), and an ambiguous one is refused for
   // the same reason a first hit is not an answer.
   throw new Error(`Referee coach "${rcName}" not found — add them in the admin console first.`);
-}
-
-function extractRefereeName(item: Record<string, unknown>, convocationKey: string): string {
-  const convocation = item[convocationKey];
-  if (!convocation || typeof convocation !== 'object') {
-    return '';
-  }
-  return asText(deepGet(convocation, 'indoorAssociationReferee', 'indoorReferee', 'person', 'displayName'));
-}
-
-/** The referee's Swiss Volley number, off the convocation VolleyManager already
- *  sends with every game.
- *
- *  `person.associationId` is the same number the SVRZ "Schiedsrichter verwalten"
- *  export calls SV-Nr. — verified 2026-08-27 against a live convocation and the
- *  register (same number, same person). It is the whole reason a game need not
- *  be matched to a person by the way a name happens to be spelled that day.
- *
- *  The search response carries the full object whatever the render config asks
- *  for, so this costs no extra request and no extra column. */
-function extractRefereeId(item: Record<string, unknown>, convocationKey: string): string {
-  const convocation = item[convocationKey];
-  if (!convocation || typeof convocation !== 'object') {
-    return '';
-  }
-  const person = deepGet(convocation, 'indoorAssociationReferee', 'indoorReferee', 'person') as Record<string, unknown> | undefined;
-  if (!person || typeof person !== 'object') return '';
-  // externalId holds the same number; kept as a fallback rather than a guess.
-  return asText(person.associationId) || asText(person.externalId);
-}
-
-function extractLineJudgeName(item: Record<string, unknown>, convocationKey: string): string {
-  const convocation = item[convocationKey];
-  if (!convocation || typeof convocation !== 'object') {
-    return '';
-  }
-  return asText(
-    deepGet(convocation, 'indoorAssociationReferee', 'indoorReferee', 'person', 'displayName')
-      || deepGet(convocation, 'person', 'displayName'),
-  );
-}
-
-/** League text for a U23 game, or '' when this is not one (or when the group
- *  name says too little to name it). VolleyManager writes the Stärkeklasse the
- *  official SR-Niveau table calls a Liga, so "Männer U23 1. Stärkeklasse"
- *  becomes "HU23 1. Liga" — the wording the Niveau matrix in the admin console
- *  is written in. Returning '' leaves the previous league text in place, so a
- *  group name we cannot read costs nothing. */
-function juniorLeagueText(leagueNames: string, groupName: string, genderSymbol: string): string {
-  const haystack = `${leagueNames} ${groupName}`;
-  if (!/u\s?23|junior/i.test(haystack)) return '';
-  // Only the U23 championship. A cup, a qualification round or a Finalissima is
-  // not league play, and naming one "HU23 2. Liga" would file it under a league
-  // cell it does not belong to.
-  if (/cup|quali|finalissima|playoff|play-off/i.test(haystack)) return '';
-  const male = genderSymbol === '♂' || /\b[mh]u\s?23\b|MÄNNER|MAENNER|HERREN|\bMEN\b/i.test(haystack);
-  const female = genderSymbol === '♀' || /\b[dwf]u\s?23\b|FRAUEN|DAMEN|\bWOMEN\b/i.test(haystack);
-  if (male === female) return ''; // neither said, or both — not ours to guess
-  // Strip the U23 token first: the "2" in "MU23" is not a league number.
-  const rest = groupName.replace(/[mdwfh]?u\s?23/ig, ' ');
-  const liga = rest.match(/([1-3])\s*\.?\s*(?:st(?:ä|ae)rkeklasse|liga|sk)\b/i) || rest.match(/\b([1-3])\b/);
-  if (!liga) return '';
-  return `${male ? 'HU23' : 'DU23'} ${liga[1]}. Liga`;
-}
-
-function transformVmGame(item: Record<string, unknown>): Record<string, unknown> {
-  const game = (item.game ?? {}) as Record<string, unknown>;
-  const encounter = (game.encounter ?? {}) as Record<string, unknown>;
-  const home = (encounter.teamHome ?? {}) as Record<string, unknown>;
-  const away = (encounter.teamAway ?? {}) as Record<string, unknown>;
-  const hall = (game.hall ?? {}) as Record<string, unknown>;
-  const address = (hall.primaryPostalAddress ?? {}) as Record<string, unknown>;
-  const group = (game.group ?? {}) as Record<string, unknown>;
-  const phase = (group.phase ?? {}) as Record<string, unknown>;
-  const league = (phase.league ?? {}) as Record<string, unknown>;
-  const leagueCategory = (league.leagueCategory ?? {}) as Record<string, unknown>;
-
-  const leagueShort = asText(leagueCategory.shortName || leagueCategory.name);
-  const genderRaw = asText(league.gender).toUpperCase().trim();
-  // Try explicit gender field first, then fall back to detecting from league/category names
-  const leagueFullName = [asText(league.name), asText(league.displayName), asText(leagueCategory.name)].join(' ').toUpperCase();
-  const genderSymbol = /^(MALE|M|HERREN|MEN|MÄNNER|MAENNER)$/.test(genderRaw) ? '♂'
-    : /^(FEMALE|F|DAMEN|WOMEN|FRAUEN)$/.test(genderRaw) ? '♀'
-    : /\b(HERREN|MEN|MÄNNER|MAENNER|MALE)\b/.test(leagueFullName) ? '♂'
-    : /\b(DAMEN|WOMEN|FRAUEN|FEMALE)\b/.test(leagueFullName) ? '♀'
-    : '';
-  const groupDisplay = asText(group.displayName);
-  const groupMatch = groupDisplay.match(/Gruppe\s+([A-Z0-9]+)/) || groupDisplay.match(/\|\s*([A-Z0-9]+)\s*$/);
-  const groupSuffix = groupMatch ? groupMatch[1] : '';
-  // U23 is one league ("SVRZ | U23") whose groups carry everything that tells
-  // its games apart: "Männer U23 1. Stärkeklasse", "Frauen U23 3. Stärkeklasse".
-  // Neither the gender fallback above (it only reads league/category names) nor
-  // the group suffix (only "Gruppe X" or a trailing "| X") picks that up, so
-  // every U23 group used to land as a bare "U23" — indistinguishable, and the
-  // Niveau filter could say nothing about it. Spelled in the vocabulary of the
-  // official SR-Niveau table: HU23 / DU23 + Liga.
-  const juniorText = juniorLeagueText(`${leagueShort} ${leagueFullName}`, groupDisplay || asText(group.name), genderSymbol);
-  const leagueText = juniorText || [leagueShort, genderSymbol, groupSuffix].filter(Boolean).join(' ');
-  const firstReferee =
-    extractRefereeName(item, 'activeRefereeConvocationFirstHeadReferee')
-    || asText(item.activeFirstHeadRefereeName);
-  const secondReferee =
-    extractRefereeName(item, 'activeRefereeConvocationSecondHeadReferee')
-    || asText(item.activeSecondHeadRefereeName);
-  // The names above are what the lists print; these are who they are. A game
-  // whose convocation is only a name (the `active…Name` fallback above) carries
-  // no number, and the readers fall back to matching the name, as before.
-  const firstRefereeId = extractRefereeId(item, 'activeRefereeConvocationFirstHeadReferee');
-  const secondRefereeId = extractRefereeId(item, 'activeRefereeConvocationSecondHeadReferee');
-  const firstLineJudge =
-    extractLineJudgeName(item, 'activeRefereeConvocationFirstLineJudge')
-    || asText(item.activeFirstLineJudgeName);
-  const secondLineJudge =
-    extractLineJudgeName(item, 'activeRefereeConvocationSecondLineJudge')
-    || asText(item.activeSecondLineJudgeName);
-
-  const isRdGame = Boolean(
-    item.hasAtLeastOneRefereeIntendedToBeSupervised || item.isSupervised,
-  );
-  const isLdGame = Boolean(
-    item.isLinesmanOneSupervised
-    || item.isLinesmanTwoSupervised
-    || item.isLinesmanThreeSupervised
-    || item.isLinesmanFourSupervised,
-  );
-  // VM's "RSV-Markierung": the game was marked for a Referee Supervisor
-  // assignment. Same intent as the RD markings above, just the other VM role —
-  // both mean "somebody wants this game observed", so both auto-flag the game
-  // for us (see /api/eligible-games). Sits on the refereeGame, not the game.
-  const isRsvGame = Boolean(item.refereeSupervisorNeeded);
-
-  // Extract geo data for maps link
-  const geo = (address.geographicalLocation ?? {}) as Record<string, unknown>;
-  const plusCode = asText(geo.plusCode);
-  const lat = geo.latitude != null ? Number(geo.latitude) : null;
-  const lng = geo.longitude != null ? Number(geo.longitude) : null;
-  const mapsUrl = plusCode
-    ? `https://www.google.com/maps/place/${encodeURIComponent(plusCode)}`
-    : lat != null && lng != null
-      ? `https://www.google.com/maps?q=${lat},${lng}`
-      : '';
-
-  // Extract game result — priority: championship > referee > home team
-  const resultReport = (
-    game.gameResultReportFromChampionshipOwner
-    || game.gameResultReportFromReferee
-    || game.gameResultReportFromHomeTeam
-    || null
-  ) as Record<string, unknown> | null;
-
-  let gameResult = '';
-  if (resultReport) {
-    const homeSets: number[] = [];
-    const awaySets: number[] = [];
-    for (let s = 1; s <= 5; s += 1) {
-      const h = resultReport[`homeTeamSet${s}Balls`];
-      const a = resultReport[`awayTeamSet${s}Balls`];
-      if (h != null && a != null) {
-        homeSets.push(Number(h));
-        awaySets.push(Number(a));
-      }
-    }
-    if (homeSets.length > 0) {
-      const homeWins = homeSets.filter((h, i) => h > awaySets[i]).length;
-      const awayWins = awaySets.filter((a, i) => a > homeSets[i]).length;
-      const setScores = homeSets.map((h, i) => `${h}:${awaySets[i]}`).join(' / ');
-      gameResult = `${homeWins}:${awayWins} (${setScores})`;
-    }
-  }
-
-  return {
-    external_id: asText(game.number),
-    match_no: asText(game.number),
-    league: leagueText,
-    match_date: asText(game.startingDateTime),
-    location: [asText(hall.name), asText(address.combinedAddress), [asText(address.postalCode), asText(address.city)].filter(Boolean).join(' ')].filter(Boolean).join(', '),
-    home_team: asText(home.name),
-    away_team: asText(away.name),
-    first_referee: firstReferee,
-    second_referee: secondReferee,
-    first_referee_id: firstRefereeId,
-    second_referee_id: secondRefereeId,
-    first_line_judge: firstLineJudge,
-    second_line_judge: secondLineJudge,
-    is_rd_game: isRdGame,
-    is_ld_game: isLdGame,
-    is_rsv_game: isRsvGame,
-    maps_url: mapsUrl,
-    game_result: gameResult,
-    _assigned_people: [firstReferee, secondReferee, firstLineJudge, secondLineJudge],
-  };
 }
 
 // Coachees are per-season rows: a referee coached in 25/26 who was not imported
@@ -3711,16 +3083,16 @@ function getDefaultSyncRange(): SyncWindow {
   };
 }
 
-async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
-  const vmUsername = asText(process.env.VM_USERNAME);
-  const vmPassword = asText(process.env.VM_PASSWORD);
-  if (!vmUsername || !vmPassword) {
-    throw new Error('Set VM_USERNAME and VM_PASSWORD in environment variables.');
-  }
+/** The window's games from the SVRZ Game Center, as rows (server/svrzGameCenter.ts;
+ *  VolleyManager refuses this server since 25.11.2026). */
+async function fetchSyncRows(from: string, to: string): Promise<Array<Record<string, unknown>>> {
+  const games = await fetchGameCenterGames(from.slice(0, 10), to.slice(0, 10));
+  return games.map(transformGameCenterGame).filter((row) => asText(row.match_no));
+}
 
+async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
   const { from, to } = resolveSyncWindow(windowInput);
-  const { jar, csrfToken, windowUniqueId } = await vmLogin(vmUsername, vmPassword);
-  const { items, total } = await fetchAllVmGames(jar, csrfToken, from, to, windowUniqueId);
+  const transformed = await fetchSyncRows(from, to);
   const coachees = await getCoacheeIndex();
   // Per row, because a sync window can straddle a season boundary and last
   // season's coachees must not pull this season's games in (or vice versa).
@@ -3734,12 +3106,8 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
     return assignedQueries(row).some((slot) => coachees.has(season, slot));
   };
 
-  const transformed = items
-    .map((raw) => transformVmGame(raw as Record<string, unknown>))
-    .filter((row) => asText(row.match_no));
-
-  // A coachee on it, or a VolleyManager mark on it — see gamesSync.ts for why
-  // the mark is grounds of its own.
+  // A coachee on it (the Game Center publishes no observation marks, so that
+  // half of isRowWanted is always false now).
   const wanted = (row: Record<string, unknown>) => isRowWanted(row, hasCoacheeOnRow(row));
   const matchedRows = transformed.filter(wanted);
 
@@ -3775,15 +3143,20 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
     } catch { /* not stored, or the lookup failed — nothing to refresh */ }
   }
 
-  // Held games VolleyManager no longer lists — cancelled, or moved out of
-  // the window. Only from the unattended default window, never a one-day
-  // import from the console, and only when every page came back.
+  // Held games the schedule no longer lists — cancelled, or moved out of the
+  // window. Only from the unattended default window, never a one-day import
+  // from the console. Complete by construction: fetchGameCenterGames throws on
+  // any failed call, so a partial read never gets this far.
   const defaultWindow = !asText(windowInput.date) && !asText(windowInput.from) && !asText(windowInput.to);
   if (defaultWindow) {
     await watchMissingHeldGames({
       fetchedMatchNos: new Set(transformed.map((r) => asText(r.match_no)).filter(Boolean)),
-      total, complete: items.length === total, window: { from, to }, manualIds,
+      total: transformed.length, complete: true, window: { from, to }, manualIds,
     });
+    // Everyone on a whistle this window: the manual-game pickers' fallback
+    // until the register is imported. Free — it is in the answer already.
+    await storeRefereeDirectory(refereesSeen(transformed)).catch((error) =>
+      log.warn('games.sync', 'referee directory not stored', { error: String(error) }));
   }
 
   publishLive({ type: 'games.synced', imported, refreshed });
@@ -3791,7 +3164,7 @@ async function runGamesSync(windowInput: { date?: unknown; from?: unknown; to?: 
   return {
     imported,
     refreshed,
-    totalFetched: items.length,
+    totalFetched: transformed.length,
     from,
     to,
   };
@@ -3807,7 +3180,9 @@ async function watchMissingHeldGames(o: { fetchedMatchNos: Set<string>; total: n
     const held = (await withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
       filter: `(assigned_rc != "" || assigned_rc_id != "") && match_date >= "${now.slice(0, 16)}"`,
       fields: 'id,match_no,match_date,home_team,away_team,league,location,assigned_rc,assigned_rc_id',
-    }))).filter((g) => !o.manualIds.has(String(g.id)));
+    // A 1L game is absent from every fetch by design (outside the sync's scope),
+    // never evidence that it was cancelled.
+    }))).filter((g) => !o.manualIds.has(String(g.id)) && !outsideGameCenterScope(g.league));
     let state: MissingGamesState = { lastTotal: 0, games: {} };
     try {
       const raw = JSON.parse(asText((await getSettingRecord(VM_MISSING_KEY))?.value) || '{}') as Partial<MissingGamesState>;
@@ -4576,19 +3951,9 @@ async function runGamesSyncRetryLoop(windowInput: { date?: unknown; from?: unkno
 }
 
 async function runGamesSyncDebug(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
-  return withVmLock('games-sync-debug', () => runGamesSyncDebugUnlocked(windowInput));
-}
-
-async function runGamesSyncDebugUnlocked(windowInput: { date?: unknown; from?: unknown; to?: unknown } = {}) {
-  const vmUsername = asText(process.env.VM_USERNAME);
-  const vmPassword = asText(process.env.VM_PASSWORD);
-  if (!vmUsername || !vmPassword) {
-    throw new Error('Set VM_USERNAME and VM_PASSWORD in environment variables.');
-  }
-
   const { from, to } = resolveSyncWindow(windowInput);
-  const { jar, csrfToken, windowUniqueId } = await vmLogin(vmUsername, vmPassword);
-  const { items } = await fetchAllVmGames(jar, csrfToken, from, to, windowUniqueId);
+  const raws = await fetchGameCenterGames(from.slice(0, 10), to.slice(0, 10));
+  const items = raws as unknown as Record<string, unknown>[];
   const coachees = await getCoacheeIndex();
   // The mirror of runGamesSync's test, so the diagnostic answers the same
   // question the import does: per row, the referees by number first, the
@@ -4598,8 +3963,8 @@ async function runGamesSyncDebugUnlocked(windowInput: { date?: unknown; from?: u
     return assignedQueries(row).some((slot) => coachees.has(season, slot));
   };
 
-  const transformed = items
-    .map((raw) => transformVmGame(raw as Record<string, unknown>))
+  const transformed = raws
+    .map(transformGameCenterGame)
     .filter((row) => asText(row.match_no));
   const requestedMatchNo = asText((windowInput as Record<string, unknown>).matchNo ?? (windowInput as Record<string, unknown>).match_no);
 
@@ -4627,12 +3992,9 @@ async function runGamesSyncDebugUnlocked(windowInput: { date?: unknown; from?: u
     ? transformed.find((row) => asText(row.match_no) === requestedMatchNo)
     : null;
 
-  // Also find the raw VM item for the requested match number
+  // Also find the raw Game Center game for the requested match number
   const rawMatchItem = requestedMatchNo
-    ? (items as Record<string, unknown>[]).find(item => {
-        const game = (item.game ?? {}) as Record<string, unknown>;
-        return String(game.number) === requestedMatchNo;
-      })
+    ? items.find((item) => String(item.gameId) === requestedMatchNo)
     : null;
 
   const requestedGame = matchNoLookup
@@ -4688,11 +4050,8 @@ async function runGamesSyncDebugUnlocked(windowInput: { date?: unknown; from?: u
     ...(Array.isArray((windowInput as Record<string, unknown>).gameNumbers)
       ? {
           rawGames: Object.fromEntries(
-            ((windowInput as Record<string, unknown>).gameNumbers as string[]).map(gn => {
-              const raw = (items as Record<string, unknown>[]).find(item => {
-                const game = (item.game ?? {}) as Record<string, unknown>;
-                return String(game.number) === String(gn);
-              });
+            ((windowInput as Record<string, unknown>).gameNumbers as string[]).map((gn) => {
+              const raw = items.find((item) => String(item.gameId) === String(gn));
               return [String(gn), raw ?? null];
             }),
           ),
@@ -4701,38 +4060,12 @@ async function runGamesSyncDebugUnlocked(windowInput: { date?: unknown; from?: u
   };
 }
 
-// Also locked: it logs in and, through vmLogin, re-asserts the games role on the
-// shared account — so an admin pressing "Check" mid-sync would move the role
-// under a job that is already paging.
-async function runVmAuthCheck(debug = false) {
-  return withVmLock('vm-auth-check', () => runVmAuthCheckUnlocked(debug));
-}
-
-async function runVmAuthCheckUnlocked(debug = false) {
-  const vmUsername = asText(process.env.VM_USERNAME);
-  const vmPassword = asText(process.env.VM_PASSWORD);
-  if (!vmUsername || !vmPassword) {
-    throw new Error('Set VM_USERNAME and VM_PASSWORD in environment variables.');
-  }
-
-  const trace: VmTraceEntry[] = [];
-  let csrfToken = '';
-  try {
-    const result = await vmLoginWithTrace(vmUsername, vmPassword, debug ? trace : undefined);
-    csrfToken = result.csrfToken;
-  } catch (error) {
-    if (debug) {
-      const wrapped = new Error(String(error));
-      (wrapped as Error & { trace?: VmTraceEntry[] }).trace = trace;
-      throw wrapped;
-    }
-    throw error;
-  }
-  return {
-    ok: true,
-    csrfTokenFound: Boolean(csrfToken),
-    ...(debug ? { trace } : {}),
-  };
+// Was the VolleyManager login check. The games come from the SVRZ Game Center
+// now, so this answers whether it does: today's games, one small read.
+async function runGameCenterCheck() {
+  const today = new Date().toISOString().slice(0, 10);
+  const games = await fetchGameCenterGames(today, today);
+  return { ok: true, source: 'svrz-game-center', gamesToday: games.length };
 }
 
 // ── Live updates ──────────────────────────────────────────────────────
@@ -6397,178 +5730,69 @@ app.post('/api/coachees/import', requireAdminSession, async (req: Request, res: 
   }
 });
 
-// Fills in coachee email/phone from the VolleyManager referee list. Meant to
-// run right after an XLSX import, which carries neither.
+// Fills in coachee email/phone/Niveau from the SV register (the referee XLSX,
+// imported by SV-Nr.). It was the VolleyManager referee list, matched by name;
+// that login is gone (blocked since 25.11.2026), and the register holds the same
+// fields keyed by the number, so no namesake can hand a coachee a stranger's
+// address any more.
 app.post('/api/admin/coachees/sync-contacts', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
-    const username = asText(process.env.VM_USERNAME);
-    const password = asText(process.env.VM_PASSWORD);
-    if (!username || !password) { res.status(400).json({ error: say('VM_USERNAME / VM_PASSWORD sind nicht gesetzt.', 'VM_USERNAME / VM_PASSWORD are not set.') }); return; }
     const body = (req.body ?? {}) as Record<string, unknown>;
     const overwrite = Boolean(body.overwrite);
     const season = body.season == null || body.season === '' ? null : Number(body.season);
 
-    const contacts = await fetchVmRefereeContacts(username, password);
-    // The pickers read this same list; the fetch is the expensive half, so keep
-    // what it cost rather than making the console pay for it again.
-    await storeRefereeDirectory(contacts);
-    // Index under both name orders — the XLSX and VM disagree on which comes
-    // first, and normalizeName already folds case and accents.
-    //
-    // Every key holds ALL its candidates, and the two orders are kept apart.
-    // This was one map with `if (!byName.has(key)) set(key, c)`, so two
-    // referees sharing a name — or whose names reverse into each other, which
-    // the server's normalizeName does NOT fold together — collided and the one
-    // VolleyManager happened to page first silently won. The other vanished
-    // from the index, and a coachee with no address on file could be handed the
-    // WRONG PERSON's address for good, with every later coaching report mailed
-    // to a stranger and nothing anywhere reporting it. An ambiguous name is now
-    // refused and returned to the caller instead of being resolved by paging
-    // order; the forward order is tried first so an exact "Vorname Nachname"
-    // always beats a reversed guess.
-    const byNameForward = new Map<string, VmRefereeContact[]>();
-    const byNameReversed = new Map<string, VmRefereeContact[]>();
-    const indexUnder = (index: Map<string, VmRefereeContact[]>, key: string, contact: VmRefereeContact) => {
-      if (!key) return;
-      const bucket = index.get(key);
-      if (bucket) bucket.push(contact); else index.set(key, [contact]);
-    };
-    for (const c of contacts) {
-      indexUnder(byNameForward, normalizeName(`${c.firstName} ${c.lastName}`), c);
-      indexUnder(byNameReversed, normalizeName(`${c.lastName} ${c.firstName}`), c);
+    // Link first: a coachee typed in by name gets its SV number here, and the
+    // number is all the lookup below goes by.
+    const link = await linkCoacheesToReferees();
+    const register = await getRefereeRegister();
+    const bySv = new Map<string, ReturnType<typeof refereeFromRecord>>();
+    for (const row of register) {
+      const person = refereeFromRecord(row);
+      if (person.id) bySv.set(person.id, person);
     }
 
     const coachees = await listCoacheesWithFallbackSort();
     const scoped = season == null ? coachees : coachees.filter((c) => Number(c.season) === season);
     let updated = 0, alreadySet = 0, notFound = 0;
     const missing: string[] = [];
-    // Names VolleyManager holds more than once. Reported, never guessed at.
-    const ambiguous: string[] = [];
-
     const coacheeName = (coachee: AnyRecord) =>
       asText(coachee.full_name) || `${asText(coachee.first_name)} ${asText(coachee.last_name)}`.trim();
 
-    // The same person listed twice is not an ambiguity — only genuinely
-    // different people are. Compared on the fields we would actually write.
-    const distinctPeople = (bucket: VmRefereeContact[]): VmRefereeContact[] => {
-      const seen = new Map<string, VmRefereeContact>();
-      for (const c of bucket) {
-        const key = [c.firstName, c.lastName, c.email, c.phone].map((v) => normalizeName(v)).join('|');
-        if (!seen.has(key)) seen.set(key, c);
+    for (const coachee of scoped) {
+      const hit = bySv.get(asText(coachee.referee_id));
+      if (!hit) {
+        notFound++;
+        if (missing.length < 50) missing.push(coacheeName(coachee));
+        continue;
       }
-      return [...seen.values()];
-    };
-
-    /** A referee-list hit, or why there isn't one. Never picks between people.
-     *
-     *  By name, and by name only — the one live site left that decides a
-     *  person by their spelling. The addressviewer answers with the columns
-     *  it is asked for and `person.associationId` is not among them (step 11
-     *  of the plan puts it there behind a flag), so there is no number on the
-     *  VolleyManager side to match on yet. Ambiguity is refused, never
-     *  resolved by paging order, and the sync reports what it could not
-     *  place. */
-    const lookupContact = (coachee: AnyRecord): { hit?: VmRefereeContact; ambiguous?: boolean } => {
-      const keys = [
-        normalizeName(coacheeName(coachee)), // identity:display — name-only by necessity: VolleyManager sends no SV number here until step 11
-        normalizeName(`${asText(coachee.last_name)} ${asText(coachee.first_name)}`), // identity:display — the other order of the same name-only key
-      ];
-      for (const index of [byNameForward, byNameReversed]) {
-        for (const key of keys) {
-          const bucket = key ? index.get(key) : undefined;
-          if (!bucket) continue;
-          const people = distinctPeople(bucket);
-          if (people.length > 1) return { ambiguous: true };
-          return { hit: people[0] };
-        }
-      }
-      return {};
-    };
-    // Never clobber a hand-corrected address unless explicitly asked to.
-    const applyContact = async (coachee: AnyRecord, hit: VmContact) => {
+      // Never clobber a hand-corrected value unless explicitly asked to, and a
+      // write that changes nothing is not an update.
       const patch: Record<string, unknown> = {};
       if (hit.email && (overwrite || !asText(coachee.email))) patch.email = hit.email;
       if (hit.phone && (overwrite || !asText(coachee.phone))) patch.phone = hit.phone;
-      // Niveau follows the same rule as the contact fields. Only ever N1..N4
-      // from VM; the Stufe half is not offered by that API, so `stage` is left
-      // exactly as it was.
       if (hit.level && (overwrite || !asText(coachee.referee_level))) patch.referee_level = hit.level;
-      // A write that would set every field to what it already holds is not an
-      // update. Without this, `overwrite` reported all 52 matched coachees as
-      // "updated" when nothing about them had changed.
       for (const [field, value] of Object.entries(patch)) {
         if (asText(coachee[field]) === asText(value)) delete patch[field];
       }
-      if (Object.keys(patch).length === 0) { alreadySet++; return false; }
+      if (Object.keys(patch).length === 0) { alreadySet++; continue; }
       await withCollection(collectionCandidates.coachees, (c) => c.update(coachee.id, patch));
       updated++;
-      return true;
-    };
-
-    const unresolved: AnyRecord[] = [];
-    for (const coachee of scoped) {
-      const match = lookupContact(coachee);
-      // Two different referees answer to this name. Writing either address is a
-      // coin flip with somebody's personal report as the stake, so write
-      // nothing and say so — an admin can pick the right one by hand.
-      if (match.ambiguous) {
-        if (ambiguous.length < 50) ambiguous.push(coacheeName(coachee));
-        continue;
-      }
-      if (!match.hit) { unresolved.push(coachee); continue; }
-      await applyContact(coachee, match.hit);
     }
-
-    // Everyone the referee list did not cover. There is no second source: the
-    // games pass that used to live here is gone.
-    //
-    // It read referee contacts off game convocations, and it could never work.
-    // Measured 2026-08-24 over 300 games / 61 convocations under the
-    // referee-delegate role — the only role that can open the game list at all:
-    // ZERO carried a flat `emailAddress`, and ZERO carried the referee's own
-    // address either. VolleyManager strips contact fields from convocation data
-    // for every role this account can hold, which confirms the 2026-08-13 field
-    // note. Re-ordering which of the two was preferred would therefore have
-    // changed nothing, and the pass cost a full-season scrape and eight upstream
-    // calls to find exactly nothing.
-    //
-    // It also carried real risk while it existed: pairing a name from one
-    // convocation slot with an address from another is precisely how a coachee
-    // ends up holding a stranger's e-mail. Kept behind a flag it was still one
-    // `{"useGames": true}` away from running.
-    //
-    // If the account ever gains a role that can read the games AND see contacts,
-    // this comes back deliberately — not by flipping a flag nobody has tested.
-    notFound += unresolved.length;
-    for (const coachee of unresolved) {
-      if (missing.length < 50) missing.push(coacheeName(coachee));
-    }
-
-    // The sync is the second step of a season's import and used to be the
-    // last; the register link is the third, and running it here means the
-    // admin who pressed the two buttons is not left with a list that still
-    // matches by name. Its own counts are reported beside the sync's — an
-    // ambiguous VolleyManager name and an ambiguous register name are
-    // different problems with different fixes.
-    const link = await linkCoacheesToReferees();
 
     res.json({
-      refereesFetched: contacts.length,
+      refereesFetched: register.length,
       coachees: scoped.length,
       updated,
       alreadySet,
       notFound,
       missing,
-      ambiguous,
+      ambiguous: [],
       ...link,
     });
   } catch (error) {
     if (error instanceof SchemaOutOfDateError) { res.status(400).json({ error: error.message }); return; }
-    // What fails here is a VolleyManager login, the role switch or the referee
-    // list itself, and the admin who pressed the button is the one who can fix
-    // it — so name the step instead of sending them to the container log.
-    res.status(500).json({ error: upstreamError(error) });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -6627,20 +5851,16 @@ async function listRefereeRecords(): Promise<AnyRecord[]> {
 }
 
 // ── The VolleyManager contact list, cached ───────────────────────────
-// What the pickers had before the roster existed, and what they fall back to
-// until the XLSX has been imported once. Fetching it costs a VM login and a
-// paged search, so it is kept in app_settings and refreshed by the contact
-// sync, which already holds exactly this answer in its hand.
+// What the pickers fall back to until the register XLSX has been imported once:
+// everyone the nightly Game Center sync saw on a whistle (refereesSeen in
+// gamesSync.ts), kept in app_settings. The key keeps its old name so the list
+// on file keeps answering until the first sync replaces it.
 const REFEREE_DIRECTORY_KEY = 'vm_referees';
-type StoredReferee = { name: string; email: string; level: string };
+type StoredReferee = { id?: string; name: string; email: string; level: string };
 type RefereeDirectory = { at: string; people: StoredReferee[] };
 
-async function storeRefereeDirectory(contacts: VmRefereeContact[]): Promise<StoredReferee[]> {
-  const people = contacts
-    .map((c) => ({ name: `${c.firstName} ${c.lastName}`.trim(), email: c.email, level: c.level }))
-    .filter((p) => p.name);
-  await setSetting(REFEREE_DIRECTORY_KEY, JSON.stringify({ at: new Date().toISOString(), people }));
-  return people;
+async function storeRefereeDirectory(people: StoredReferee[]): Promise<void> {
+  await setSetting(REFEREE_DIRECTORY_KEY, JSON.stringify({ at: new Date().toISOString(), people: people.filter((p) => p.name) }));
 }
 
 async function readRefereeDirectory(): Promise<RefereeDirectory> {
@@ -6655,22 +5875,12 @@ async function readRefereeDirectory(): Promise<RefereeDirectory> {
   }
 }
 
-// One VM login at a time. The console asks for this list every time the
-// settings tab opens, and an empty cache would otherwise start a fetch per tab.
-let refereeDirectoryFetch: Promise<StoredReferee[]> | null = null;
-function refreshRefereeDirectory(username: string, password: string): Promise<StoredReferee[]> {
-  if (!refereeDirectoryFetch) {
-    refereeDirectoryFetch = fetchVmRefereeContacts(username, password)
-      .then(storeRefereeDirectory)
-      .finally(() => { refereeDirectoryFetch = null; });
-  }
-  return refereeDirectoryFetch;
-}
-
 // What the manual-game pickers read. The roster answers when it has been
-// imported; before that, the VolleyManager cache does, and `source` says which
-// so the console can tell an admin the list is the lesser one.
-app.get('/api/admin/referees', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+// imported; before that, the referees the nightly Game Center sync saw on the
+// whistle (names and SV numbers, no contacts), and `source` says which so the
+// console can tell an admin the list is the lesser one. The wire value stays
+// 'volleymanager' for the clients already installed.
+app.get('/api/admin/referees', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
     await ensureAdminAuth();
     const roster = await listRefereeRecords();
@@ -6679,24 +5889,11 @@ app.get('/api/admin/referees', requireAdminSession, async (req: Request, res: Ex
       return;
     }
     const cached = await readRefereeDirectory();
-    if (cached.people.length > 0 && asText(req.query.refresh) !== '1') {
-      res.json({ source: 'volleymanager', at: cached.at, people: cached.people.map((p) => ({ id: '', ...p })) });
-      return;
-    }
-    const username = asText(process.env.VM_USERNAME);
-    const password = asText(process.env.VM_PASSWORD);
-    if (!username || !password) {
-      res.json({ source: 'volleymanager', at: cached.at, people: [], error: say('VM_USERNAME / VM_PASSWORD sind nicht gesetzt.', 'VM_USERNAME / VM_PASSWORD are not set.') });
-      return;
-    }
-    const people = await refreshRefereeDirectory(username, password);
-    res.json({ source: 'volleymanager', at: new Date().toISOString(), people: people.map((p) => ({ id: '', ...p })) });
+    res.json({ source: 'volleymanager', at: cached.at, people: cached.people.map((p) => ({ id: '', ...p })) });
   } catch (error) {
-    // A list that cannot be refreshed is not a broken form: the pickers still
-    // have the coachee list, and the console still creates games. Answer with
-    // whatever is on file and name the step that failed.
-    const cached = await readRefereeDirectory().catch(() => ({ at: '', people: [] as StoredReferee[] }));
-    res.json({ source: 'volleymanager', at: cached.at, people: cached.people.map((p) => ({ id: '', ...p })), error: upstreamError(error) });
+    // A list that cannot be read is not a broken form: the pickers still have
+    // the coachee list, and the console still creates games.
+    res.json({ source: 'volleymanager', at: '', people: [], error: safeError(error) });
   }
 });
 
@@ -11563,8 +10760,8 @@ app.get('/api/admin/games/sync-status', requireAdminSession, async (_req: Reques
 // same trace or the card keeps showing last night's run as the latest word.
 app.post('/api/games/sync', requireAdminSession, async (req: Request, res: ExpressResponse) => {
   try {
-    // Clicking "Import now" twice, or clicking it at 05:00, must not put two
-    // sessions on the one VM account at the same time.
+    // Clicking "Import now" twice, or during the nightly run, must not run two
+    // imports over the same rows at once.
     const result = await withVmLock('games-sync-manual', () => runGamesSync(req.body ?? {}));
     await recordGamesSyncStatus({
       at: new Date().toISOString(),
@@ -11589,18 +10786,12 @@ app.post('/api/games/sync/debug', requireAdminSession, async (req: Request, res:
   }
 });
 
-app.post('/api/vm/auth-check', requireAdminSession, async (req: Request, res: ExpressResponse) => {
+// Path kept for anything that still calls it; it checks the Game Center now.
+app.post('/api/vm/auth-check', requireAdminSession, async (_req: Request, res: ExpressResponse) => {
   try {
-    const debug = Boolean((req.body ?? {}).debug);
-    const result = await runVmAuthCheck(debug);
-    res.json(result);
+    res.json(await runGameCenterCheck());
   } catch (error) {
-    const debug = Boolean((req.body ?? {}).debug);
-    const trace = (error as Error & { trace?: VmTraceEntry[] })?.trace;
-    res.status(500).json({
-      error: safeError(error),
-      ...(debug && trace ? { trace } : {}),
-    });
+    res.status(500).json({ error: safeError(error) });
   }
 });
 
@@ -14353,12 +13544,17 @@ app.post('/api/admin/migrate-source-payload', requireAdminSession, async (_req: 
         }
 
         const sp = payload as Record<string, unknown>;
+        // The VolleyManager payload old rows stored — read from the database, no VolleyManager call.
+        const storedName = (key: string) => {
+          const c = sp[key] as { indoorAssociationReferee?: { indoorReferee?: { person?: { displayName?: unknown } } }; person?: { displayName?: unknown } } | undefined;
+          return asText(c?.indoorAssociationReferee?.indoorReferee?.person?.displayName || c?.person?.displayName);
+        };
         const firstLineJudge = asText(game.first_line_judge)
           || asText(sp.activeFirstLineJudgeName)
-          || extractLineJudgeName(sp, 'activeRefereeConvocationFirstLineJudge');
+          || storedName('activeRefereeConvocationFirstLineJudge');
         const secondLineJudge = asText(game.second_line_judge)
           || asText(sp.activeSecondLineJudgeName)
-          || extractLineJudgeName(sp, 'activeRefereeConvocationSecondLineJudge');
+          || storedName('activeRefereeConvocationSecondLineJudge');
 
         await withCollection(collectionCandidates.games, (collection) =>
           collection.update(game.id, {

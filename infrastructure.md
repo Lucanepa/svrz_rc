@@ -153,8 +153,8 @@ DATABASE_URL="postgresql://svrz:<POSTGRES_PASSWORD>@postgres:5432/svrz"  # set b
 FILES_DIR="/app/files"                   # set by compose; ./files locally
 DOC_CACHE_DIR="/app/doc-cache"           # set by compose; unset locally = proxied docs kept in memory only
 POCKETBASE_ADMIN_PASSWORD="..."  # ⚠ keep: session/PIN secret fallback (see the Database section)
-VM_USERNAME="..."   # game sync credentials
-VM_PASSWORD="..."   # game sync credentials
+VM_USERNAME="..."   # only the SR-Börse poller (off by default) still logs in; the games sync needs no credentials
+VM_PASSWORD="..."   # same
 ```
 
 ### Backend vars (admin session / scheduling / collections)
@@ -184,15 +184,18 @@ WEBAUTHN_ANDROID_ORIGINS=""
 PRESIDENT_UI_USERNAME="praesidium"
 PRESIDENT_UI_PASSWORD="<set to open the chair's tabs; unset keeps them shut>"
 
-VM_BASE=""  # game sync base URL
+VM_BASE=""  # SR-Börse poller only
+# Games come from the SVRZ Game Center (see "Games source" below). All optional.
+SVRZ_GAME_CENTER_BASE="https://www.svrz.ch"
+SVRZ_GC_GAMES_ACTION=""          # pin the server-action id; normally found on its own
+SVRZ_GAME_CENTER_TIMEOUT_MS="60000"
 VM_SYNC_CRON="0 1 * * *"
 VM_SYNC_TIMEZONE="Europe/Zurich"
 VM_SYNC_MAX_RETRIES="10"
 VM_SYNC_RETRY_DELAY_MS="15000"
 
-# Extra daytime games syncs, local hours. Empty = nightly only (default since
-# 27.11.2026, after VolleyManager blocked this server); "12,16" = the old refreshes.
-VM_SYNC_REFRESH_HOURS=""
+# Extra daytime games syncs, local hours (Game Center reads). Empty = nightly only.
+VM_SYNC_REFRESH_HOURS="12,16"
 # SR-Börse poller. OFF unless VM_BOERSE_ENABLED=1 (since 27.11.2026): its slow
 # search was the heaviest traffic this server sent before the block.
 VM_BOERSE_ENABLED="0"
@@ -790,9 +793,9 @@ Sign-in rate limits (in memory, reset on restart):
 - `PUT /api/games/:id/assign-rc`: assign RC to a game.
 - `GET /api/rc-overview`: per-RC done/outstanding/planned summary.
 - `GET /api/rc-overview/:rcName/coachees`: per-RC coachee breakdown.
-- `POST /api/games/sync`: run game sync from Swiss Volley data. Records its outcome under the `games_sync_status` setting exactly as the cron does, so a run started by hand shows up in the admin console's readout. On failure it answers the upstream reason, not `Internal server error` — the admin clicking it is the one who has to go fix the VolleyManager account.
-- `POST /api/games/sync/debug`: run sync with debug trace payload.
-- `POST /api/vm/auth-check`: validate upstream auth/session.
+- `POST /api/games/sync`: run the game sync from the SVRZ Game Center. Records its outcome under the `games_sync_status` setting exactly as the cron does, so a run started by hand shows up in the admin console's readout. On failure it answers the upstream reason, not `Internal server error` — the admin clicking it is the one who has to know why.
+- `POST /api/games/sync/debug`: run the sync dry and report coachee matching per game (`raw` is the Game Center game).
+- `POST /api/vm/auth-check`: path kept; checks that the SVRZ Game Center answers (`gamesToday`). No VolleyManager login any more.
 - `GET /api/survey/:token`: **public** — prefill data for the post-visit survey page. No login; the token is the capability, so no name or match number rides in the URL.
 - `POST /api/survey/:token`: **public** — submit the survey. Write-once (409 if already answered), own per-IP rate-limit bucket.
 - **Season budget (Admin → Finance & operations, formerly "Übersicht" — the same label in both console languages; sentence case — only the first word capitalised — is the rule for every label, Luca 2026-10-05) — 2026-10-05.** `app_settings` `budget_<season>` = `{ budget, extras: [{ id, label, amount }] }`; never saved = CHF 5500 and no extras. `GET /api/admin/budget?season=` / `PUT /api/admin/budget` (`{season, budget, extras}`) — admin **or chair** (`requireFinanceReader`; the one /api/admin route the chair may use, Jasmin 2026-10-05 "budget si"). The chair's console has its own **Finanzen** tab, fed by `GET /api/finance[?season=]` (admin or chair; without a season the default one — her console never loads the settings): the coaches' rows (done/outstanding/planned/paidAt), cap, visit rate, the season's meetings with rates and attendance, and the budget. It does not open `/api/rc-overview` to her; payouts and meeting ticks stay admin work. Excluded from the service-worker cache. The sums are done in the console by `src/lib/budget.ts` over the same rows the coaches' table shows: visits = Vergütet (done up to the cap) × visit rate; committed = games taken but not yet filed (outstanding + planned) still under the cap × rate; meetings = attendees × each meeting's own rate; remaining = budget − visits − meetings − extras − committed. A CHF column per coach shows their current claim (visits + meetings).
@@ -882,9 +885,7 @@ Then call `/api/eligible-games` again.
 ### 5) Debug upstream auth/sync
 
 ```bash
-curl -X POST "http://localhost:8787/api/vm/auth-check" \
-  -H "Content-Type: application/json" \
-  -d '{"debug":true}'
+curl -X POST "http://localhost:8787/api/vm/auth-check"   # does the SVRZ Game Center answer?
 ```
 
 ```bash
@@ -1149,6 +1150,40 @@ Each entry carries a `hash` (this occurrence — the handle for an annotation) a
 a `group` (the class: level + event + message with ids, numbers and timings
 blanked, so 400 copies of one failure collapse into a single row).
 
+## Games source: the SVRZ Game Center (since 27.11.2026)
+
+VolleyManager's web server has refused this server's address since 25.11.2026,
+so the games sync no longer logs in anywhere. It reads the **SVRZ Game Center**
+(`https://www.svrz.ch/game-center`), the region's own public schedule on a
+separate host, the same way that page does (`server/svrzGameCenter.ts`):
+
+- `POST /game-center` with header `Next-Action: <id>` and body
+  `["?region=SVRZ&includeCup=1&dateStart=YYYY-MM-DD&dateEnd=YYYY-MM-DD"]`.
+  The answer is React flight; line `1:` is a JSON array of games. **`dateEnd` is
+  exclusive.** One call per month of the window, sequential (~10 calls a night).
+- The action id is a build hash and changes when svrz.ch redeploys. When it
+  stops answering with games, the client reads the page's scripts, tries every
+  server reference in them, and keeps the one that returns a non-empty game list.
+  `SVRZ_GC_GAMES_ACTION` pins one by hand.
+- **Scope:** region `SVRZ` in full, plus region `SV` for the **Mobiliar Volley
+  Cup** only. **1L is not read** (owner, 27.11.2026); held 1L games are left out
+  of the missing-game watch so their coaches are not told they were cancelled.
+  Stored 1L rows stay as they were.
+- `transformGameCenterGame` (`server/gamesSync.ts`) writes exactly what the
+  VolleyManager transform wrote: league text (`3L ♂ A`, `HU23 1. Liga`, `SM Quali
+  U23 ♂`, …), `match_date` as `…T19:00:00.000000+00:00`, result with set scores,
+  maps link from the plus code, both referees with their SV numbers. Live check
+  27.11.2026 over 773 stored games: 0 differences in league, teams, referees and
+  SV numbers; the rest were real reschedules, a double space in old addresses,
+  and results now carrying set scores.
+- **Not published there, so gone:** line judges, VolleyManager's RD/RSV
+  observation marks (a game now comes in only when a coachee is on it, and the
+  sync clears old marks on the games it reads), referee contacts. Contacts come
+  from the SV register: "Kontaktdaten aus dem SV-Register" in the console copies
+  email/phone/level by SV number (`POST /api/admin/coachees/sync-contacts`).
+- The manual-game pickers fall back (register not imported yet) to everyone the
+  last nightly sync saw on a whistle, with SV numbers (`refereesSeen`).
+
 ## Upstream Sync Troubleshooting
 
 ### ⚠ The shared VolleyManager account — read before touching ANY VM job
@@ -1158,7 +1193,7 @@ inside it. Three codebases use it:
 
 | project | what runs | where |
 |---|---|---|
-| **svrz_rc** (this repo) | games sync (01:00 Zürich; the 12:15/16:15 refreshes and the SR-Börse poll are off by default since 27.11.2026), contact sync and auth check on demand | API container, lenovoserver |
+| **svrz_rc** (this repo) | **nothing by default since 27.11.2026**: games come from the SVRZ Game Center, contacts from the SV register. Only the SR-Börse poller (off unless `VM_BOERSE_ENABLED=1`) still logs in | API container, lenovoserver |
 | **wiedisync** | `vm_sync`, `svrz_sync`, game/nomination pushes, result reports, sheet reads | Directus **prod container only**, hetzner — since 2026-10-11 the dev container never logs in (wiedisync `external-accounts.js`, fail-closed) |
 | **OpenVolley** | eScoresheet schedule sync (`svrz_games`, `escoresheet/backend/lib/vmSync.js`), ~1 min | backend container, lenovoserver (`/opt/openvolley`) |
 | kscw-website | **nothing** — it only *links* to volleyball.ch, holds no credentials. Keep it that way. |
@@ -1187,12 +1222,12 @@ protection is disjoint windows and the table below.
 | on demand, kickoff +3h…+14d, EXCEPT 22:00–00:59 UTC and :05–:30 at 10/11/14/15 UTC | **game result read** (`GET /kscw/game-result/:gameId`, when a participant opens the game modal) — one login + two GETs (`vm-game-result.js`, ≤8 s each, cached 60 s per game, never waits: busy account → stored state). Inside an svrz_rc window it does not read at all and serves the stored state | wiedisync | club — claims `vm-result:read`, released in `finally` (since 2026-09-29) |
 | **hourly at :35**, EXCEPT 22:00–00:59 UTC and :05–:30 at 10/11/14/15 UTC | **result sweep** — first sends up to 5 **queued result pushes** (above), one worker at a time through the endpoint's `spawnResultPush`; then a READ-ONLY opponent-report read for ≤15 games between kickoff +3h and +14d (`kscw-hooks`, in-process; each read capped at 30 s, the run stops at the first failed read); the reads never file or confirm | wiedisync | club — each queued push claims `game-result:push` until its child exits; the reads claim `vm_result_sweep`, released in `finally` (since 2026-09-29) |
 | **daily 22:30 UTC** | OpenVolley schedule sync (until 2026-11-09 06:00 Zurich, without a role switch: under the club role it got HTTP 403 on the referee page most days from 2026-10-23) — switches into `RefereeDelegate` itself, inside svrz_rc's referee-role window | OpenVolley | `RefereeDelegate` `e693b8cf…` (the same as svrz_rc's games sync) |
-| **daily 23:00 / 00:00 UTC** | games sync (`0 1 * * *` Europe/Zurich, `VM_SYNC_CRON`) | svrz_rc | `RefereeDelegate` `e693b8cf…` |
-| **OFF by default since 27.11.2026**; with `VM_SYNC_REFRESH_HOURS=12,16`: daily 10:15 + 14:15 UTC (summer) / 11:15 + 15:15 UTC (winter) | games refresh — the same sync again at 12:15 and 16:15 Europe/Zurich (at :15 since 2026-09-28, off the watchdog's :00/:30), minutes per run | svrz_rc | `RefereeDelegate` `e693b8cf…` |
+| ~~daily 23:00 / 00:00 UTC~~ | games sync (`0 1 * * *` Europe/Zurich) — **reads the SVRZ Game Center since 27.11.2026, not this account** | svrz_rc | none |
+| daily 12:15 + 16:15 Europe/Zurich | games refresh — **reads the SVRZ Game Center since 27.11.2026, not this account** | svrz_rc | none |
 | **OFF by default since 27.11.2026**; with `VM_BOERSE_ENABLED=1`: every 2 h, round the clock, EXCEPT 04:00–04:59 UTC | SR-Börse poll (`VM_BOERSE_POLL_MINUTES`, default 120 since 26.11.2026; one VM session is kept up to 6 h between polls, `server/boerse.ts`) — interval counted from boot, so the minute moves with each deploy; plus one run 90 s after boot, which obeys the same skip (since 2026-09-28) | svrz_rc | `RefAdmin:Referee` for seconds, then restores the role it found |
 | on demand | game push (booking confirmed) | wiedisync | club |
 | on demand | **team-roster assign** (`POST /kscw/admin/vm-team-assign`, `/admin/vm-teams`) — ~1 min, in-process | wiedisync | club — claims `vm_team_assign` |
-| on demand | manual import, contact sync, auth check | svrz_rc | RefereeDelegate / club |
+| on demand | ~~manual import, contact sync, auth check~~ — Game Center / SV register since 27.11.2026, no VM login | svrz_rc | none |
 | on demand | admin "Börse jetzt abrufen" (`POST /api/admin/boerse/sync`) — a person's choice, NOT held back in 04:00 UTC | svrz_rc | `RefAdmin:Referee`, restored |
 
 **A blocked address stops all calls (since 27.11.2026).** From 25.11.2026

@@ -2,6 +2,7 @@
 // collection's shape. Kept out of index.ts so they can be tested without a
 // PocketBase or a VolleyManager session — the sync itself cannot be.
 import { nameKeys, samePerson } from '../src/lib/identity.ts';
+import type { GameCenterGame } from './svrzGameCenter.ts';
 
 /** The two whistle slots a game record carries, name column beside id column. */
 const REFEREE_SLOTS = [
@@ -347,4 +348,127 @@ export function missingHeldGames(o: {
     games[g.id] = entry;
   }
   return { state: { lastTotal: o.total, games }, notify, returned, skipped: '' };
+}
+
+// ── Rows from the SVRZ Game Center ───────────────────────────────────
+
+/** League text for a U23 game, or '' when this is not one (or when the group
+ *  name says too little to name it). The group carries the Stärkeklasse the
+ *  official SR-Niveau table calls a Liga, so "Männer U23 1. Stärkeklasse"
+ *  becomes "HU23 1. Liga" — the wording the Niveau matrix in the admin console
+ *  is written in. Moved here unchanged from the VolleyManager transform. */
+export function juniorLeagueText(leagueNames: string, groupName: string, genderSymbol: string): string {
+  const haystack = `${leagueNames} ${groupName}`;
+  if (!/u\s?23|junior/i.test(haystack)) return '';
+  // Only the U23 championship. A cup, a qualification round or a Finalissima is
+  // not league play, and naming one "HU23 2. Liga" would file it under a league
+  // cell it does not belong to.
+  if (/cup|quali|finalissima|playoff|play-off/i.test(haystack)) return '';
+  const male = genderSymbol === '♂' || /\b[mh]u\s?23\b|MÄNNER|MAENNER|HERREN|\bMEN\b/i.test(haystack);
+  const female = genderSymbol === '♀' || /\b[dwf]u\s?23\b|FRAUEN|DAMEN|\bWOMEN\b/i.test(haystack);
+  if (male === female) return ''; // neither said, or both — not ours to guess
+  // Strip the U23 token first: the "2" in "MU23" is not a league number.
+  const rest = groupName.replace(/[mdwfh]?u\s?23/ig, ' ');
+  const liga = rest.match(/([1-3])\s*\.?\s*(?:st(?:ä|ae)rkeklasse|liga|sk)\b/i) || rest.match(/\b([1-3])\b/);
+  if (!liga) return '';
+  return `${male ? 'HU23' : 'DU23'} ${liga[1]}. Liga`;
+}
+
+/** "2026-11-06T19:00:00Z" → "2026-11-06T19:00:00.000000+00:00": the exact text
+ *  VolleyManager's startingDateTime left in match_date, which day filters
+ *  compare as text. */
+export function storedMatchDate(utc: unknown): string {
+  const m = text(utc).match(/^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})/);
+  return m ? `${m[1]}.000000+00:00` : '';
+}
+
+/** A Game Center game in the shape the VolleyManager transform produced, field
+ *  for field, so upsertGame, the coachee matching, the held-game mails and
+ *  every list read it exactly as before: league "3L ♂ A" / "HU23 1. Liga",
+ *  result "1:3 (19:25 / 23:25 / 25:18 / 13:25)", maps link from the plus code.
+ *  Line judges and the observation marks are not published, so they are empty
+ *  — a game now comes in only on the strength of a coachee on it. */
+export function transformGameCenterGame(g: GameCenterGame): Record<string, unknown> {
+  const id = text(g.gameId);
+  const genderSymbol = g.gender === 'm' ? '♂' : g.gender === 'f' ? '♀' : '';
+  const leagueShort = text(g.league?.caption);
+  const groupDisplay = text(g.group?.caption);
+  const groupMatch = groupDisplay.match(/Gruppe\s+([A-Z0-9]+)/) || groupDisplay.match(/\|\s*([A-Z0-9]+)\s*$/);
+  const juniorText = juniorLeagueText(`${leagueShort} ${leagueShort.toUpperCase()}`, groupDisplay, genderSymbol);
+  const league = juniorText || [leagueShort, genderSymbol, groupMatch?.[1] ?? ''].filter(Boolean).join(' ');
+
+  const ref = (slot: '1' | '2') => {
+    const r = g.referees?.[slot];
+    return { name: r ? `${text(r.firstName)} ${text(r.lastName)}`.trim() : '', id: r ? text(r.refereeId) : '' };
+  };
+  const r1 = ref('1');
+  const r2 = ref('2');
+
+  const hall = g.hall ?? {};
+  const location = [
+    text(hall.caption),
+    [text(hall.street), text(hall.number)].filter(Boolean).join(' '),
+    [text(hall.zip), text(hall.city)].filter(Boolean).join(' '),
+  ].filter(Boolean).join(', ');
+  const plusCode = text(hall.plusCode);
+  const lat = Number(hall.latitude);
+  const lng = Number(hall.longitude);
+  const maps_url = plusCode
+    ? `https://www.google.com/maps/place/${encodeURIComponent(plusCode)}`
+    : Number.isFinite(lat) && Number.isFinite(lng) && hall.latitude != null && hall.longitude != null
+      ? `https://www.google.com/maps?q=${lat},${lng}` : '';
+
+  const sets = Object.entries(g.setResults ?? {})
+    .sort(([a], [b]) => Number(a) - Number(b))
+    .map(([, s]) => [Number(s?.home), Number(s?.away)] as const)
+    .filter(([h, a]) => Number.isFinite(h) && Number.isFinite(a));
+  const game_result = sets.length
+    ? `${sets.filter(([h, a]) => h > a).length}:${sets.filter(([h, a]) => a > h).length} (${sets.map(([h, a]) => `${h}:${a}`).join(' / ')})`
+    : '';
+
+  return {
+    external_id: id,
+    match_no: id,
+    league,
+    match_date: storedMatchDate(g.playDateUtc),
+    location,
+    home_team: text(g.teams?.home?.caption),
+    away_team: text(g.teams?.away?.caption),
+    first_referee: r1.name,
+    second_referee: r2.name,
+    first_referee_id: r1.id,
+    second_referee_id: r2.id,
+    first_line_judge: '',
+    second_line_judge: '',
+    is_rd_game: false,
+    is_ld_game: false,
+    is_rsv_game: false,
+    maps_url,
+    game_result,
+    _assigned_people: [r1.name, r2.name, '', ''],
+  };
+}
+
+/** Leagues the Game Center sync does not read (1L, dropped 27.11.2026). A held
+ *  game in one of them is absent from every fetch by design, so the
+ *  missing-game watch must not count it — or its coach is told it was cancelled. */
+export function outsideGameCenterScope(league: unknown): boolean {
+  return /^1L\b/.test(text(league));
+}
+
+/** Everyone on a whistle in the fetched games, once per SV number (else per
+ *  name): the fallback list for the manual-game pickers until the register is
+ *  imported. No e-mail or level — the Game Center publishes neither. */
+export function refereesSeen(rows: Array<Record<string, unknown>>): Array<{ id: string; name: string; email: string; level: string }> {
+  const out = new Map<string, { id: string; name: string; email: string; level: string }>();
+  for (const row of rows) {
+    for (const [nameKey, idKey] of REFEREE_SLOTS) {
+      const name = text(row[nameKey]);
+      if (!name) continue;
+      const id = text(row[idKey]);
+      const key = id || `name:${name.toLowerCase()}`;
+      if (!out.has(key)) out.set(key, { id, name, email: '', level: '' });
+    }
+  }
+  return [...out.values()].sort((a, b) => a.name.localeCompare(b.name, 'de'));
 }

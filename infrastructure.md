@@ -1165,15 +1165,15 @@ separate host, the same way that page does (`server/svrzGameCenter.ts`):
   stops answering with games, the client reads the page's scripts, tries every
   server reference in them, and keeps the one that returns a non-empty game list.
   `SVRZ_GC_GAMES_ACTION` pins one by hand.
-- **Scope:** region `SVRZ` in full, plus region `SV` for the **Mobiliar Volley
-  Cup** only. **1L is not read** (owner, 27.11.2026); held 1L games are left out
-  of the missing-game watch so their coaches are not told they were cancelled.
-  Stored 1L rows stay as they were.
+- **Scope:** region `SVRZ` in full (2L–5L, U23, U20, SM Quali, Züri Cup…), plus
+  region `SV` for **1L** and the **Mobiliar Volley Cup** — what VolleyManager
+  listed for SVRZ referees (NLA/NLB never were). 1L groups come as a bare letter
+  ("D"), mapped to "1L ♀ D". Only games with a coachee on them are kept.
 - `transformGameCenterGame` (`server/gamesSync.ts`) writes exactly what the
   VolleyManager transform wrote: league text (`3L ♂ A`, `HU23 1. Liga`, `SM Quali
   U23 ♂`, …), `match_date` as `…T19:00:00.000000+00:00`, result with set scores,
   maps link from the plus code, both referees with their SV numbers. Live check
-  27.11.2026 over 773 stored games: 0 differences in league, teams, referees and
+  27.11.2026 over all 821 stored games in the window (1L included): 0 differences in league, teams, referees and
   SV numbers; the rest were real reschedules, a double space in old addresses,
   and results now carrying set scores.
 - **Line judges:** SVRZ games have none (only NLA does, outside the scope), so

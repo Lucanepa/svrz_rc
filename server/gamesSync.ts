@@ -394,7 +394,9 @@ export function transformGameCenterGame(g: GameCenterGame): Record<string, unkno
   const genderSymbol = g.gender === 'm' ? '♂' : g.gender === 'f' ? '♀' : '';
   const leagueShort = text(g.league?.caption);
   const groupDisplay = text(g.group?.caption);
-  const groupMatch = groupDisplay.match(/Gruppe\s+([A-Z0-9]+)/) || groupDisplay.match(/\|\s*([A-Z0-9]+)\s*$/);
+  // 1L names its groups with the bare letter ("D"), where VolleyManager wrote
+  // "Gruppe D"; a single capital is that letter (no regional group is one).
+  const groupMatch = groupDisplay.match(/Gruppe\s+([A-Z0-9]+)/) || groupDisplay.match(/\|\s*([A-Z0-9]+)\s*$/) || groupDisplay.match(/^([A-Z])$/);
   const juniorText = juniorLeagueText(`${leagueShort} ${leagueShort.toUpperCase()}`, groupDisplay, genderSymbol);
   const league = juniorText || [leagueShort, genderSymbol, groupMatch?.[1] ?? ''].filter(Boolean).join(' ');
 
@@ -448,13 +450,6 @@ export function transformGameCenterGame(g: GameCenterGame): Record<string, unkno
     game_result,
     _assigned_people: [r1.name, r2.name, '', ''],
   };
-}
-
-/** Leagues the Game Center sync does not read (1L, dropped 27.11.2026). A held
- *  game in one of them is absent from every fetch by design, so the
- *  missing-game watch must not count it — or its coach is told it was cancelled. */
-export function outsideGameCenterScope(league: unknown): boolean {
-  return /^1L\b/.test(text(league));
 }
 
 /** Everyone on a whistle in the fetched games, once per SV number (else per

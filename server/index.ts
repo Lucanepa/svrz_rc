@@ -63,7 +63,7 @@ import { withVmLock, tryVmLock, vmLockHeldBy, VmBlockedError } from './vmlock.ts
 import { fetchBoerseOffers, planReconcile, gameHolder, boersePollMustSkip, boerseFailureLevel, boerseRecovered, type BoerseOfferRow } from './boerse.ts';
 import { nudgeStep, dueNudgeStep, matchEndedAt, nudgeAgo, NUDGE_DAY_MS, NUDGE_MAX_DAYS } from './reportNudge.ts';
 import { handedOverIds, pickSwitch, switchExpiry, switchOpen, switchSettlement, type HandOver, type SlotBooking } from './switchRequests.ts';
-import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, heldGameChange, missingHeldGames, CREW_RELEASE_MIN_DAYS, transformGameCenterGame, outsideGameCenterScope, refereesSeen, type HeldGameChange, type HeldGameSide, type HeldSlot, type MissingGamesState } from './gamesSync.ts';
+import { isVmMarkedRow, isRowWanted, vmFactsPatch, mergeIncomingGame, boerseCrewPatch, heldGameChange, missingHeldGames, CREW_RELEASE_MIN_DAYS, transformGameCenterGame, refereesSeen, type HeldGameChange, type HeldGameSide, type HeldSlot, type MissingGamesState } from './gamesSync.ts';
 import { fetchGameCenterGames } from './svrzGameCenter.ts';
 import { buildCoacheeIndex, claimNamesSlot, claimNamesRow, coacheeRowNames, registerNumbers, type CoacheeIndex, type CoacheeQuery, type SvMismatch } from './coacheeIndex.ts';
 import { refereeLinkProblem, startingRefereeId, planCoacheeLinks, planRefereeIdBackfill, manualMatchNo, planRegisterWrite, orphanedHandEntry, type BackfillPlan, type LinkProblem, type RegisterWrite } from './dataHygiene.ts';
@@ -3180,9 +3180,7 @@ async function watchMissingHeldGames(o: { fetchedMatchNos: Set<string>; total: n
     const held = (await withCollection(collectionCandidates.games, (c) => c.getFullList<AnyRecord>({
       filter: `(assigned_rc != "" || assigned_rc_id != "") && match_date >= "${now.slice(0, 16)}"`,
       fields: 'id,match_no,match_date,home_team,away_team,league,location,assigned_rc,assigned_rc_id',
-    // A 1L game is absent from every fetch by design (outside the sync's scope),
-    // never evidence that it was cancelled.
-    }))).filter((g) => !o.manualIds.has(String(g.id)) && !outsideGameCenterScope(g.league));
+    }))).filter((g) => !o.manualIds.has(String(g.id)));
     let state: MissingGamesState = { lastTotal: 0, games: {} };
     try {
       const raw = JSON.parse(asText((await getSettingRecord(VM_MISSING_KEY))?.value) || '{}') as Partial<MissingGamesState>;

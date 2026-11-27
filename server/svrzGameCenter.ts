@@ -43,14 +43,16 @@ export const GAME_CENTER_BASE = process.env.SVRZ_GAME_CENTER_BASE || 'https://ww
 const TIMEOUT_MS = Number(process.env.SVRZ_GAME_CENTER_TIMEOUT_MS || 60_000);
 const HEADERS = { 'User-Agent': 'svrz-rc-gamecenter/1.0', 'Accept-Language': 'de-CH,de;q=0.9' };
 
-/** What the sync reads. The whole region, plus the one Swiss Volley
- *  competition VolleyManager used to list for SVRZ referees besides 1L. 1L is
- *  left out on purpose (owner, 27.11.2026). */
+/** What the sync reads: the whole region (2L–5L, U23, U20, SM Quali, Züri Cup…),
+ *  plus the two Swiss Volley competitions SVRZ referees are convoked to — 1L and
+ *  the Mobiliar Volley Cup — which is what VolleyManager listed for them. NLA/NLB
+ *  never were. Only games with a coachee on them are kept after this anyway. */
+const NATIONAL_KEPT = new Set(['1L', 'Mobiliar Volley Cup']);
 export const GAME_CENTER_SCOPES: Array<{ region: string; keep: (g: GameCenterGame) => boolean }> = [
   { region: 'SVRZ', keep: () => true },
-  // shortcut: reads all of Swiss Volley's games in the window to keep ~20 cup
-  // games (a few MB a night); filter by the cup's leagueId if that ever matters.
-  { region: 'SV', keep: (g) => g.league?.caption === 'Mobiliar Volley Cup' },
+  // shortcut: reads all of Swiss Volley's games in the window to keep 1L and the
+  // cup (a few MB a night); filter by leagueId if that ever matters.
+  { region: 'SV', keep: (g) => NATIONAL_KEPT.has(String(g.league?.caption ?? '')) },
 ];
 
 /** The game list in a server-action answer, or null when the answer is not

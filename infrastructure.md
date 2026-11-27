@@ -190,9 +190,12 @@ VM_SYNC_TIMEZONE="Europe/Zurich"
 VM_SYNC_MAX_RETRIES="10"
 VM_SYNC_RETRY_DELAY_MS="15000"
 
-# SR-Börse poller. Off with VM_BOERSE_ENABLED=0 — a kill switch that needs no
-# deploy if VolleyManager ever starts rate-limiting the shared login.
-VM_BOERSE_ENABLED="1"
+# Extra daytime games syncs, local hours. Empty = nightly only (default since
+# 27.11.2026, after VolleyManager blocked this server); "12,16" = the old refreshes.
+VM_SYNC_REFRESH_HOURS=""
+# SR-Börse poller. OFF unless VM_BOERSE_ENABLED=1 (since 27.11.2026): its slow
+# search was the heaviest traffic this server sent before the block.
+VM_BOERSE_ENABLED="0"
 VM_BOERSE_POLL_MINUTES="120"
 # How far back to read. The whole board is ~3600 rows and one unbounded pass
 # outran the request deadline; an offer on a game already played cannot threaten
@@ -1155,7 +1158,7 @@ inside it. Three codebases use it:
 
 | project | what runs | where |
 |---|---|---|
-| **svrz_rc** (this repo) | games sync (01:00 + 12:15/16:15 Zürich), 2-hourly SR-Börse poll, contact sync, auth check | API container, lenovoserver |
+| **svrz_rc** (this repo) | games sync (01:00 Zürich; the 12:15/16:15 refreshes and the SR-Börse poll are off by default since 27.11.2026), contact sync and auth check on demand | API container, lenovoserver |
 | **wiedisync** | `vm_sync`, `svrz_sync`, game/nomination pushes, result reports, sheet reads | Directus **prod container only**, hetzner — since 2026-10-11 the dev container never logs in (wiedisync `external-accounts.js`, fail-closed) |
 | **OpenVolley** | eScoresheet schedule sync (`svrz_games`, `escoresheet/backend/lib/vmSync.js`), ~1 min | backend container, lenovoserver (`/opt/openvolley`) |
 | kscw-website | **nothing** — it only *links* to volleyball.ch, holds no credentials. Keep it that way. |
@@ -1185,12 +1188,20 @@ protection is disjoint windows and the table below.
 | **hourly at :35**, EXCEPT 22:00–00:59 UTC and :05–:30 at 10/11/14/15 UTC | **result sweep** — first sends up to 5 **queued result pushes** (above), one worker at a time through the endpoint's `spawnResultPush`; then a READ-ONLY opponent-report read for ≤15 games between kickoff +3h and +14d (`kscw-hooks`, in-process; each read capped at 30 s, the run stops at the first failed read); the reads never file or confirm | wiedisync | club — each queued push claims `game-result:push` until its child exits; the reads claim `vm_result_sweep`, released in `finally` (since 2026-09-29) |
 | **daily 22:30 UTC** | OpenVolley schedule sync (until 2026-11-09 06:00 Zurich, without a role switch: under the club role it got HTTP 403 on the referee page most days from 2026-10-23) — switches into `RefereeDelegate` itself, inside svrz_rc's referee-role window | OpenVolley | `RefereeDelegate` `e693b8cf…` (the same as svrz_rc's games sync) |
 | **daily 23:00 / 00:00 UTC** | games sync (`0 1 * * *` Europe/Zurich, `VM_SYNC_CRON`) | svrz_rc | `RefereeDelegate` `e693b8cf…` |
-| **daily 10:15 + 14:15 UTC** (summer) / **11:15 + 15:15 UTC** (winter) | games refresh — the same sync again at 12:15 and 16:15 Europe/Zurich (at :15 since 2026-09-28, off the watchdog's :00/:30) (`VM_SYNC_REFRESH_HOURS`, default `12,16`), minutes per run | svrz_rc | `RefereeDelegate` `e693b8cf…` |
-| **every 2 h, round the clock, EXCEPT 04:00–04:59 UTC** | SR-Börse poll (`VM_BOERSE_POLL_MINUTES`, default 120 since 26.11.2026; one VM session is kept up to 6 h between polls, `server/boerse.ts`) — interval counted from boot, so the minute moves with each deploy; plus one run 90 s after boot, which obeys the same skip (since 2026-09-28) | svrz_rc | `RefAdmin:Referee` for seconds, then restores the role it found |
+| **OFF by default since 27.11.2026**; with `VM_SYNC_REFRESH_HOURS=12,16`: daily 10:15 + 14:15 UTC (summer) / 11:15 + 15:15 UTC (winter) | games refresh — the same sync again at 12:15 and 16:15 Europe/Zurich (at :15 since 2026-09-28, off the watchdog's :00/:30), minutes per run | svrz_rc | `RefereeDelegate` `e693b8cf…` |
+| **OFF by default since 27.11.2026**; with `VM_BOERSE_ENABLED=1`: every 2 h, round the clock, EXCEPT 04:00–04:59 UTC | SR-Börse poll (`VM_BOERSE_POLL_MINUTES`, default 120 since 26.11.2026; one VM session is kept up to 6 h between polls, `server/boerse.ts`) — interval counted from boot, so the minute moves with each deploy; plus one run 90 s after boot, which obeys the same skip (since 2026-09-28) | svrz_rc | `RefAdmin:Referee` for seconds, then restores the role it found |
 | on demand | game push (booking confirmed) | wiedisync | club |
 | on demand | **team-roster assign** (`POST /kscw/admin/vm-team-assign`, `/admin/vm-teams`) — ~1 min, in-process | wiedisync | club — claims `vm_team_assign` |
 | on demand | manual import, contact sync, auth check | svrz_rc | RefereeDelegate / club |
 | on demand | admin "Börse jetzt abrufen" (`POST /api/admin/boerse/sync`) — a person's choice, NOT held back in 04:00 UTC | svrz_rc | `RefAdmin:Referee`, restored |
+
+**A blocked address stops all calls (since 27.11.2026).** From 25.11.2026
+VolleyManager's web server answered this server's address with its stock
+`403 Forbidden` page, and the retries and polls kept knocking (~36 requests
+per blocked nightly run). Now `vmFetch` (`server/vmlock.ts`) stops on the first
+such page: no VolleyManager request for 23 h, no retries, so the next nightly
+sync is the only probe. The app's own role 403s never carry that page and do
+not trip it. A restart of `svrz-api` clears it, to try sooner after an unblock.
 
 ⚠ **Known overlap, accepted.** wiedisync's `vm_sync` watchdog retries every 30
 min (at :00 and :30 UTC) *while their Monday `vm_sync` is failing*. Our

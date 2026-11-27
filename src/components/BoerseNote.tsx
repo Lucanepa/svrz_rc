@@ -107,8 +107,9 @@ function age(iso: string | undefined, lang: 'DE' | 'EN'): { text: string; mins: 
 export function SyncFreshness({ games, lang }: { games?: string; lang: 'DE' | 'EN' }) {
   const de = lang === 'DE';
   const g = age(games, lang);
-  // The games sync runs nightly (and twice by day), so a day is normal and two is not.
-  const stale = !g || g.mins > 36 * 60;
+  // The games sync runs every hour (two night hours are left out), so three
+  // hours means runs were missed.
+  const stale = !g || g.mins > 3 * 60;
   const label = de ? 'Spiele' : 'Games';
   return (
     <span className={cn('inline-flex items-center gap-1 text-[10.5px]', stale ? 'font-semibold text-amber-700' : 'text-stone-400')}>

@@ -5053,11 +5053,11 @@ function GameImportCard({ lang }: { lang: Lang }) {
   // What matters is whether the importer still RUNS, not whether games
   // changed: the season is September to April, so from May to August
   // nothing changes for months and a "nothing new lately" alarm would cry
-  // wolf all summer. The cron is daily, so a run recorded within 36 hours
-  // is healthy; the newest game is shown as information, not as a test.
+  // wolf all summer. The sync is hourly (two night hours are left out), so
+  // a run recorded within 3 hours is healthy; the newest game is shown as information, not as a test.
   const lastRun = sync?.status ? new Date(sync.status.at) : null;
   const stale = !lastRun || Number.isNaN(lastRun.getTime())
-    || (Date.now() - lastRun.getTime()) / 3_600_000 > 36;
+    || (Date.now() - lastRun.getTime()) / 3_600_000 > 3;
   // `sync.status` is null before the first run and undefined if the
   // payload is not what we expect — `!== null` was true for both, and
   // then reading .ok threw and took the whole console down with it.
